@@ -17,7 +17,7 @@ config.gsheets_key_path = config.output_dir + "withings2gsheets-service-account.
 config.sqlite3_output_path = config.output_dir + "withings_data.db";
 config.csv_output_path = config.data_dir + "withings_data.csv";
 
-// Height in Meters
+// User Height (185 cm)
 config.height = 1.85; 
 
 // Metric Type IDs to Name mapping
