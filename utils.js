@@ -8,7 +8,7 @@ function getPreviousTimestamp() {
     try {
         let timestamp = fs.readFileSync(config.timestamp_path);
         return JSON.parse(timestamp);
-    } catch (err) { return 1577836800; }
+    } catch (err) { return 1577836800; } // Default to Jan 1, 2020
 }
 
 async function getReplacementAccessToken(refreshToken) {
@@ -36,33 +36,49 @@ function storeTime(latestTimestamp) {
     try { fs.writeFileSync(config.timestamp_path, JSON.stringify(latestTimestamp)); } catch (error) { console.log("Error storing timestamp", error) }
 }
 
-// RESTORED: This function was missing in the previous version
-async function getWithingsData(accessToken, lastUpdate) {
+// FIXED: Signature matches how index.js calls it (3 arguments)
+async function getWithingsData(accessToken, refreshToken, currentTime) {
+    const startdate = getPreviousTimestamp();
+    const enddate = currentTime;
+
     var bodyFormData = new FormData();
     bodyFormData.append('action', 'getmeas');
     bodyFormData.append('access_token', accessToken);
-    bodyFormData.append('lastupdate', lastUpdate);
-    // Requesting specific metrics defined in config
+    bodyFormData.append('startdate', startdate);
+    bodyFormData.append('enddate', enddate);
+    
     if (config.metricList) {
         bodyFormData.append('meastypes', config.metricList);
     }
 
     try {
+        console.log(`Fetching data from ${new Date(startdate * 1000).toISOString()} to ${new Date(enddate * 1000).toISOString()}...`);
         const response = await axios.post("https://wbsapi.withings.net/measure", bodyFormData, { headers: { ...bodyFormData.getHeaders() } });
         
         // Handle Invalid Token (401)
         if (response.data.status === 401) {
             console.log("Access Token Expired. Refreshing...");
-            let tokens = JSON.parse(fs.readFileSync(config.token_path));
-            let newAccessToken = await getReplacementAccessToken(tokens.refreshToken);
+            let newAccessToken = await getReplacementAccessToken(refreshToken);
             if (newAccessToken) {
-                return await getWithingsData(newAccessToken, lastUpdate);
+                // Retry with new token
+                return await getWithingsData(newAccessToken, refreshToken, currentTime);
             } else {
-                throw new Error("Failed to refresh token.");
+                console.error("Failed to refresh token.");
+                return null;
             }
         }
         
-        return response.data.body;
+        if (response.data.status === 0) {
+            let data = response.data.body;
+            let mergedData = await processData(data);
+            console.log(`Processed ${mergedData.length} new entries.`);
+            await persistData(mergedData);
+            await storeTime(currentTime);
+            return data;
+        } else {
+            console.log("API Error Status:", response.data.status);
+            return null;
+        }
 
     } catch (error) {
         console.log("Error getting Withings data:", error.message);
@@ -85,14 +101,14 @@ async function processData(scaleData) {
 
                     // Calculate BMI automatically if Weight is present
                     if (metricName === "Weight (kg)" && config.height) {
-                        // BMI = Weight / Height^2
                         singleEntry["BMI"] = val / (config.height * config.height);
                     }
                     
                     simplifiedData.push(singleEntry);
                 } else {
-                    // Log unknown metrics to help identify missing IDs
-                    // console.log(`[Info] Unmapped Metric Found: Type ${measure.type}, Value ${measure.value}`);
+                    // DEBUG: If you see this in console, it means we found a metric ID we don't know about yet.
+                    // This is useful to find the REAL ID for Visceral Fat if "12" is wrong.
+                     console.log(`[Info] Unmapped Metric Found: Type ${measure.type}, Value ${measure.value}`);
                 }
             });
         });
@@ -111,13 +127,12 @@ async function writeCSVToDrive(mergedData) {
     const auth = new google.auth.GoogleAuth({ keyFile: config.gsheets_key_path, scopes: ['https://www.googleapis.com/auth/drive'] });
     const drive = google.drive({ version: 'v3', auth });
     
-    // Updated Header Row with BMI and Visceral Fat Rating
     const headerRow = "date,Weight (kg),BMI,Body Fat (%),Visceral Fat Rating,Pulse Wave Velocity (m/s),AFib Status,Vascular Age (years),Nerve Health Score\n";
     let fileId = null;
     let fileContent = "";
 
     try {
-        const listRes = await drive.files.list({ q: `'${config.driveFolderId}' in parents and name = '${config.driveFileName}'`, fields: 'files(id, name)' });
+        const listRes = await drive.files.list({ q: `'${config.driveFolderId}' in parents and name = '${config.driveFileName}' and trashed = false`, fields: 'files(id, name)' });
         if (listRes.data.files.length > 0) fileId = listRes.data.files[0].id;
 
         if (fileId) {
@@ -130,7 +145,6 @@ async function writeCSVToDrive(mergedData) {
         let newContent = "";
         let existingDates = new Set();
 
-        // Parse existing CSV dates to avoid duplicates
         const lines = fileContent.split('\n');
         lines.forEach(line => {
             const parts = line.split(',');
@@ -138,12 +152,10 @@ async function writeCSVToDrive(mergedData) {
         });
 
         mergedData.forEach(item => {
-            // Convert UNIX timestamp to YYYY-MM-DD HH:mm:ss
             let d = new Date(item.date * 1000);
             let formattedDate = d.toISOString().replace('T', ' ').substring(0, 19);
 
             if (!existingDates.has(formattedDate)) {
-                // Construct Row with new columns
                 let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
                 let visceral = item["Visceral Fat Rating"] || "";
                 
@@ -161,7 +173,7 @@ async function writeCSVToDrive(mergedData) {
                 console.log("Created new CSV on Drive.");
             }
         } else {
-            console.log("No new data to append.");
+            console.log("No new data to append (CSV is up to date).");
         }
 
     } catch (error) { console.log("Drive Error:", error.message); }
@@ -172,7 +184,6 @@ async function persistData(mergedData) {
 
     // 1. Save to Local CSV
     if (!fs.existsSync(config.csv_output_path)) {
-        // Write Header if file doesn't exist
         fs.writeFileSync(config.csv_output_path, "date,Weight (kg),BMI,Body Fat (%),Visceral Fat Rating,Pulse Wave Velocity (m/s),AFib Status,Vascular Age (years),Nerve Health Score\n");
     }
 
