@@ -54,7 +54,6 @@ async function processData(scaleData) {
         return this[v.date] ? !Object.assign(this[v.date], v) : (this[v.date] = v);
     }, {});
     
-    // Sort array by date (descending) so most recent is first
     let result = Object.values(mergedMap);
     result.sort((a, b) => b.date - a.date);
     return result;
@@ -77,7 +76,6 @@ async function writeCSVToDrive(mergedData) {
         }
 
         const existingLines = (fileContent || "").split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-        // Remove header from existing lines for logical merging
         const dataLinesOnly = existingLines.filter(l => !l.startsWith("date"));
         const existingDates = dataLinesOnly.map(line => line.split(',')[0]);
 
@@ -90,12 +88,10 @@ async function writeCSVToDrive(mergedData) {
         }
 
         if (newRowsList.length > 0) {
-            // Combine Header + New Rows + Old Data
             const updatedBody = headerRow + newRowsList.join('\n') + '\n' + dataLinesOnly.join('\n');
-            
             if (fileId) {
                 await drive.files.update({ fileId, media: { mimeType: 'text/csv', body: updatedBody } });
-                console.log("CSV updated with most recent entries at the top.");
+                console.log("CSV updated. Recent entries moved to top.");
             } else {
                 await drive.files.create({ resource: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: updatedBody } });
                 console.log("New CSV created.");
@@ -106,44 +102,36 @@ async function writeCSVToDrive(mergedData) {
 
 async function persistData(mergedData) {
     for (var i = 0; i < mergedData.length; i++) {
-        // 1. Weight Scaling
         if (mergedData[i]["Weight"]) mergedData[i]["Weight"] = (mergedData[i]["Weight"] / 1000).toFixed(2);
         
-        // 2. Body Fat % + 4% Correction
         if (mergedData[i]["Body Fat %"]) {
             let bf = (mergedData[i]["Body Fat %"] / 1000) + 4;
             mergedData[i]["Body Fat %"] = bf.toFixed(2);
         }
         
-        // 3. PWV Scaling
         if (mergedData[i]["Pulse Wave Velocity (m/s)"]) mergedData[i]["Pulse Wave Velocity (m/s)"] = (mergedData[i]["Pulse Wave Velocity (m/s)"] / 1000).toFixed(2);
         
-        // 4. Nerve Health Scaling
         if (mergedData[i]["Nerve Health Score"]) mergedData[i]["Nerve Health Score"] = (mergedData[i]["Nerve Health Score"] / 1000).toFixed(1);
         if (mergedData[i]["Nerve Health Score (Advanced)"]) mergedData[i]["Nerve Health Score (Advanced)"] = (mergedData[i]["Nerve Health Score (Advanced)"] / 1000).toFixed(1);
 
-        // 5. Vascular Age Fix (Handling codes like 401)
+        // --- FIXED VASCULAR AGE ---
         if (mergedData[i]["Vascular Age"]) {
-            let vAge = mergedData[i]["Vascular Age"];
-            if (vAge > 150) { // Likely an error code or status
-                mergedData[i]["Vascular Age"] = "N/A";
-            } else {
-                mergedData[i]["Vascular Age"] = vAge;
-            }
+            let rawVAge = mergedData[i]["Vascular Age"];
+            // We divide by 10 to turn 401 into 40.1
+            mergedData[i]["Vascular Age"] = (rawVAge / 10).toFixed(1);
         }
 
-        // 6. Refined ECG Logic
+        // --- FIXED ECG MAPPING ---
         if (mergedData[i]["ECG"] !== undefined) {
             const res = mergedData[i]["ECG"];
-            // Withings Status Codes: 0 = Normal, 1 = Normal (Alt), 9/10 = Inconclusive
-            if (res === 0 || res === 1) mergedData[i]["ECG"] = "Normal";
+            // 0,1 = Normal. 5 = Sinus Tachycardia (High HR / No AFib)
+            if (res === 0 || res === 1 || res === 5) mergedData[i]["ECG"] = "Normal (High HR)";
             else if (res === 2 || res === 4) mergedData[i]["ECG"] = "AFib Detected";
             else if (res === 9) mergedData[i]["ECG"] = "Inconclusive (HR Low)";
             else if (res === 10) mergedData[i]["ECG"] = "Inconclusive (HR High)";
-            else mergedData[i]["ECG"] = "Normal"; // Defaulting to normal for status 0 or others
+            else mergedData[i]["ECG"] = "Normal";
         }
 
-        // Date Formatting
         let d = new Date(mergedData[i].date * 1000);
         let month = d.getMonth() + 1;
         mergedData[i].date = `${d.getFullYear()}-${("0"+month).slice(-2)}-${("0"+d.getDate()).slice(-2)} ${("0"+d.getHours()).slice(-2)}:${("0"+d.getMinutes()).slice(-2)}:${("0"+d.getSeconds()).slice(-2)}`;
