@@ -1,7 +1,7 @@
 const express = require('express');
 const app = express();
-const config = require('./utils/config'); // Ensure this path is correct for your repo
-const utils = require('./utils/utils');
+const config = require('./config'); // FIXED: Removed /utils/
+const utils = require('./utils');    // FIXED: Removed /utils/
 const fs = require('fs');
 const path = require('path');
 
