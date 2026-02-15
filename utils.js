@@ -65,8 +65,8 @@ async function writeCSVToDrive(mergedData) {
     const auth = new google.auth.GoogleAuth({ keyFile: config.gsheets_key_path, scopes: ['https://www.googleapis.com/auth/drive'] });
     const drive = google.drive({ version: 'v3', auth });
     
-    // Updated Header Row (No Heart Rate)
-    const headerRow = "date,Weight (kg),Body Fat (%),PWV (m/s),AFib Status,Vascular Age,Nerve Health Score\n";
+    // Updated Header Row (Full names, units included, No Heart Rate)
+    const headerRow = "date,Weight (kg),Body Fat (%),Pulse Wave Velocity (m/s),AFib Status,Vascular Age (years),Nerve Health Score\n";
     let fileId = null;
     let fileContent = "";
 
@@ -85,8 +85,8 @@ async function writeCSVToDrive(mergedData) {
         let newRowsList = [];
         for (var k = 0; k < mergedData.length; k++) {
             if (!existingDates.includes(mergedData[k].date)) {
-                // Constructing row without Heart Rate
-                let row = `${mergedData[k].date},${mergedData[k]["Weight (kg)"]||""},${mergedData[k]["Body Fat (%)"]||""},${mergedData[k]["PWV (m/s)"]||""},${mergedData[k]["AFib Status"]||""},${mergedData[k]["Vascular Age"]||""},${mergedData[k]["Nerve Health Score"]||""}`;
+                // Constructing row using new full property names
+                let row = `${mergedData[k].date},${mergedData[k]["Weight (kg)"]||""},${mergedData[k]["Body Fat (%)"]||""},${mergedData[k]["Pulse Wave Velocity (m/s)"]||""},${mergedData[k]["AFib Status"]||""},${mergedData[k]["Vascular Age (years)"]||""},${mergedData[k]["Nerve Health Score"]||""}`;
                 newRowsList.push(row);
             }
         }
@@ -95,7 +95,7 @@ async function writeCSVToDrive(mergedData) {
             const updatedBody = headerRow + newRowsList.join('\n') + '\n' + dataLinesOnly.join('\n');
             if (fileId) await drive.files.update({ fileId, media: { mimeType: 'text/csv', body: updatedBody } });
             else await drive.files.create({ resource: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: updatedBody } });
-            console.log(`Success: Added ${newRowsList.length} records (No HR column).`);
+            console.log(`Success: Added ${newRowsList.length} records.`);
         } else {
             console.log("No new data to write.");
         }
@@ -108,14 +108,18 @@ async function persistData(mergedData) {
         if (mergedData[i]["Weight (kg)"]) mergedData[i]["Weight (kg)"] = mergedData[i]["Weight (kg)"].toFixed(2);
         
         if (mergedData[i]["Body Fat (%)"]) {
-            // +4% offset
-            let bf = parseFloat(mergedData[i]["Body Fat (%)"]) + 4;
+            // +3% offset (Changed from 4%)
+            let bf = parseFloat(mergedData[i]["Body Fat (%)"]) + 3;
             mergedData[i]["Body Fat (%)"] = bf.toFixed(2);
         }
         
-        if (mergedData[i]["PWV (m/s)"]) mergedData[i]["PWV (m/s)"] = mergedData[i]["PWV (m/s)"].toFixed(2);
+        // Updated key to "Pulse Wave Velocity (m/s)"
+        if (mergedData[i]["Pulse Wave Velocity (m/s)"]) mergedData[i]["Pulse Wave Velocity (m/s)"] = mergedData[i]["Pulse Wave Velocity (m/s)"].toFixed(2);
+        
         if (mergedData[i]["Nerve Health Score"]) mergedData[i]["Nerve Health Score"] = mergedData[i]["Nerve Health Score"].toFixed(1);
-        if (mergedData[i]["Vascular Age"]) mergedData[i]["Vascular Age"] = mergedData[i]["Vascular Age"].toFixed(1);
+        
+        // Updated key to "Vascular Age (years)"
+        if (mergedData[i]["Vascular Age (years)"]) mergedData[i]["Vascular Age (years)"] = mergedData[i]["Vascular Age (years)"].toFixed(1);
 
         // Strict AFib Logic
         if (mergedData[i]["AFib Status"] !== undefined) {
