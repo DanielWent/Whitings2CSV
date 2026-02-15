@@ -30,7 +30,7 @@ config.metrics = {
     "9": "Diastolic Blood Pressure (mmHg)",
     "10": "Systolic Blood Pressure (mmHg)",
     "11": "Heart Pulse (bpm)",
-    "12": "Visceral Fat Rating", // Enabled for Body Scan
+    "12": "Visceral Fat Rating", // Mapped for Body Scan
     "54": "SP02 (%)",
     "71": "Body Temperature (celsius)",
     "73": "Skin Temperature (celsius)",
@@ -45,7 +45,6 @@ config.metrics = {
 };
 
 // List of metrics to fetch (comma-separated IDs)
-// Added '12' to the list
 config.metricList = "1,4,5,6,8,9,10,11,12,54,71,73,76,77,88,91,123,130,155,158";
 
 module.exports = config;
