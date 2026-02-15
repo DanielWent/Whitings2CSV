@@ -1,14 +1,14 @@
 var config = {};
 config.metrics = {};
 
-// UPDATE: Read from Environment Variables for security
+// Read from Environment Variables for security
 config.withingsClientID = process.env.WITHINGS_CLIENT_ID;
 config.withingsClientSecret = process.env.WITHINGS_CLIENT_SECRET;
 
-config.withingsState = "random_string_here" // This can stay hardcoded
+config.withingsState = "random_string_here" 
 
 // Google Drive Configuration
-config.driveFolderId = "PASTE_YOUR_DRIVE_FOLDER_ID_HERE"; 
+config.driveFolderId = "1rcyfE_q64FVBQce_FDmAseuayfDs_RzL"; 
 config.driveFileName = "withings_data.csv";
 
 config.height = 1.7526 
@@ -18,11 +18,14 @@ config.output_dir = config.data_dir + ".withings2gsheets/";
 config.token_path = config.output_dir + "withings2gsheetstokens.json";
 config.timestamp_path = config.output_dir + "withingsprevioustime.json";
 
+// This is the file you got from Google when you setup access to Drive. 
 config.gsheets_key_path = config.output_dir + "withings2gsheets-service-account.json";
 
+// Local paths (still used for temp storage or local runs)
 config.csv_output_path = config.data_dir + "withings_data.csv";
 config.sqlite3_output_path = config.data_dir + "withings_data.sqlite3";
 
+// Updated Metrics Map
 config.metrics = {
    "1": "Weight",
    "5": "Fat Free Mass",
@@ -37,8 +40,10 @@ config.metrics = {
    "158": "Nerve Health Score"
 }
 
+// Updated list to include 91, 130, 158
 config.metricList = "1,5,6,8,11,76,77,88,91,130,158"
 
+// Columns by index
 config.metricsConor = {
    "Weight lbs": 7,
    "Weight": 8,
