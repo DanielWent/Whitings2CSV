@@ -46,7 +46,17 @@ async function processData(scaleData) {
                     // Universal Power-of-10 Scaling
                     let val = measure.value * Math.pow(10, measure.unit);
                     singleEntry[metricName] = val;
+
+                    // Calculate BMI automatically if Weight is present
+                    if (metricName === "Weight (kg)" && config.height) {
+                        // BMI = Weight / Height^2
+                        singleEntry["BMI"] = val / (config.height * config.height);
+                    }
+                    
                     simplifiedData.push(singleEntry);
+                } else {
+                    // Log unknown metrics to help identify missing IDs (like hidden Visceral Fat IDs)
+                    console.log(`[Info] Unmapped Metric Found: Type ${measure.type}, Value ${measure.value}`);
                 }
             });
         });
@@ -65,101 +75,99 @@ async function writeCSVToDrive(mergedData) {
     const auth = new google.auth.GoogleAuth({ keyFile: config.gsheets_key_path, scopes: ['https://www.googleapis.com/auth/drive'] });
     const drive = google.drive({ version: 'v3', auth });
     
-    // Updated Header Row (Full names, units included, No Heart Rate)
-    const headerRow = "date,Weight (kg),Body Fat (%),Pulse Wave Velocity (m/s),AFib Status,Vascular Age (years),Nerve Health Score\n";
+    // Updated Header Row with BMI and Visceral Fat Rating
+    const headerRow = "date,Weight (kg),BMI,Body Fat (%),Visceral Fat Rating,Pulse Wave Velocity (m/s),AFib Status,Vascular Age (years),Nerve Health Score\n";
     let fileId = null;
     let fileContent = "";
 
     try {
-        const listRes = await drive.files.list({ q: `'${config.driveFolderId}' in parents and name = '${config.driveFileName}' and trashed = false`, fields: 'files(id, name)' });
-        if (listRes.data.files.length > 0) {
-            fileId = listRes.data.files[0].id;
+        const listRes = await drive.files.list({ q: `'${config.driveFolderId}' in parents and name = '${config.driveFileName}'`, fields: 'files(id, name)' });
+        if (listRes.data.files.length > 0) fileId = listRes.data.files[0].id;
+
+        if (fileId) {
             const getRes = await drive.files.get({ fileId: fileId, alt: 'media' });
-            fileContent = typeof getRes.data === 'string' ? getRes.data : JSON.stringify(getRes.data);
-        }
-
-        const existingLines = (fileContent || "").split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-        const dataLinesOnly = existingLines.filter(l => !l.startsWith("date"));
-        const existingDates = dataLinesOnly.map(line => line.split(',')[0]);
-
-        let newRowsList = [];
-        for (var k = 0; k < mergedData.length; k++) {
-            if (!existingDates.includes(mergedData[k].date)) {
-                // Constructing row using new full property names
-                let row = `${mergedData[k].date},${mergedData[k]["Weight (kg)"]||""},${mergedData[k]["Body Fat (%)"]||""},${mergedData[k]["Pulse Wave Velocity (m/s)"]||""},${mergedData[k]["AFib Status"]||""},${mergedData[k]["Vascular Age (years)"]||""},${mergedData[k]["Nerve Health Score"]||""}`;
-                newRowsList.push(row);
-            }
-        }
-
-        if (newRowsList.length > 0) {
-            const updatedBody = headerRow + newRowsList.join('\n') + '\n' + dataLinesOnly.join('\n');
-            if (fileId) await drive.files.update({ fileId, media: { mimeType: 'text/csv', body: updatedBody } });
-            else await drive.files.create({ resource: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: updatedBody } });
-            console.log(`Success: Added ${newRowsList.length} records.`);
+            fileContent = getRes.data;
         } else {
-            console.log("No new data to write.");
+            fileContent = headerRow;
         }
-    } catch (e) { console.log("Drive Sync Error:", e.message); }
+
+        let newContent = "";
+        let existingDates = new Set();
+
+        // Parse existing CSV dates to avoid duplicates
+        const lines = fileContent.split('\n');
+        lines.forEach(line => {
+            const parts = line.split(',');
+            if (parts.length > 0 && parts[0] !== 'date') existingDates.add(parts[0]);
+        });
+
+        mergedData.forEach(item => {
+            // Convert UNIX timestamp to YYYY-MM-DD HH:mm:ss
+            let d = new Date(item.date * 1000);
+            let formattedDate = d.toISOString().replace('T', ' ').substring(0, 19);
+
+            if (!existingDates.has(formattedDate)) {
+                // Construct Row with new columns
+                let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
+                let visceral = item["Visceral Fat Rating"] || "";
+                
+                let row = `${formattedDate},${item["Weight (kg)"]||""},${bmi},${item["Body Fat (%)"]||""},${visceral},${item["Pulse Wave Velocity (m/s)"]||""},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}\n`;
+                newContent += row;
+            }
+        });
+
+        if (newContent.length > 0) {
+            if (fileId) {
+                await drive.files.update({ fileId: fileId, media: { mimeType: 'text/csv', body: fileContent + newContent } });
+                console.log("Updated existing CSV on Drive.");
+            } else {
+                await drive.files.create({ requestBody: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: headerRow + newContent } });
+                console.log("Created new CSV on Drive.");
+            }
+        } else {
+            console.log("No new data to append.");
+        }
+
+    } catch (error) { console.log("Drive Error:", error.message); }
 }
 
+// Persist data locally (CSV) and to Google Drive
 async function persistData(mergedData) {
-    for (var i = 0; i < mergedData.length; i++) {
-        // Formatting
-        if (mergedData[i]["Weight (kg)"]) mergedData[i]["Weight (kg)"] = mergedData[i]["Weight (kg)"].toFixed(2);
-        
-        if (mergedData[i]["Body Fat (%)"]) {
-            // +3% offset (Changed from 4%)
-            let bf = parseFloat(mergedData[i]["Body Fat (%)"]) + 3;
-            mergedData[i]["Body Fat (%)"] = bf.toFixed(2);
-        }
-        
-        // Updated key to "Pulse Wave Velocity (m/s)"
-        if (mergedData[i]["Pulse Wave Velocity (m/s)"]) mergedData[i]["Pulse Wave Velocity (m/s)"] = mergedData[i]["Pulse Wave Velocity (m/s)"].toFixed(2);
-        
-        if (mergedData[i]["Nerve Health Score"]) mergedData[i]["Nerve Health Score"] = mergedData[i]["Nerve Health Score"].toFixed(1);
-        
-        // Updated key to "Vascular Age (years)"
-        if (mergedData[i]["Vascular Age (years)"]) mergedData[i]["Vascular Age (years)"] = mergedData[i]["Vascular Age (years)"].toFixed(1);
+    if (mergedData.length === 0) return;
 
-        // Strict AFib Logic
-        if (mergedData[i]["AFib Status"] !== undefined) {
-            const res = mergedData[i]["AFib Status"];
-            
-            // 2, 4 = Detected
-            if ([2, 4].includes(res)) {
-                mergedData[i]["AFib Status"] = "AFib Detected";
-            } 
-            // 0, 1, 5, 10 = Not Detected (including High HR)
-            else if ([0, 1, 5, 10].includes(res)) {
-                mergedData[i]["AFib Status"] = "AFib Not Detected";
-            } 
-            // Everything else = Inconclusive
-            else {
-                mergedData[i]["AFib Status"] = "Inconclusive";
-            }
-        }
-
-        let d = new Date(mergedData[i].date * 1000);
-        let month = d.getMonth() + 1;
-        mergedData[i].date = `${d.getFullYear()}-${("0"+month).slice(-2)}-${("0"+d.getDate()).slice(-2)} ${("0"+d.getHours()).slice(-2)}:${("0"+d.getMinutes()).slice(-2)}:${("0"+d.getSeconds()).slice(-2)}`;
+    // 1. Save to Local CSV
+    if (!fs.existsSync(config.csv_output_path)) {
+        // Write Header if file doesn't exist
+        fs.writeFileSync(config.csv_output_path, "date,Weight (kg),BMI,Body Fat (%),Visceral Fat Rating,Pulse Wave Velocity (m/s),AFib Status,Vascular Age (years),Nerve Health Score\n");
     }
+
+    let existingFileContent = fs.readFileSync(config.csv_output_path, 'utf8');
+    let existingDates = new Set();
+    existingFileContent.split('\n').forEach(line => {
+        let parts = line.split(',');
+        if (parts[0] !== 'date') existingDates.add(parts[0]);
+    });
+
+    let newLines = "";
+    mergedData.forEach(item => {
+        let d = new Date(item.date * 1000);
+        let formattedDate = d.toISOString().replace('T', ' ').substring(0, 19);
+
+        if (!existingDates.has(formattedDate)) {
+            let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
+            let visceral = item["Visceral Fat Rating"] || "";
+            
+            newLines += `${formattedDate},${item["Weight (kg)"]||""},${bmi},${item["Body Fat (%)"]||""},${visceral},${item["Pulse Wave Velocity (m/s)"]||""},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}\n`;
+        }
+    });
+
+    if (newLines.length > 0) {
+        fs.appendFileSync(config.csv_output_path, newLines);
+        console.log("Appended to local CSV.");
+    }
+
+    // 2. Save to Google Drive
     await writeCSVToDrive(mergedData);
 }
 
-async function getWithingsData(accessToken, refreshToken, currentTime) {
-    var bodyFormData = new FormData();
-    bodyFormData.append('action', 'getmeas');
-    bodyFormData.append('meastypes', config.metricList);
-    bodyFormData.append('startdate', getPreviousTimestamp());
-    bodyFormData.append('enddate', currentTime);
-    try {
-        const response = await axios.post("https://wbsapi.withings.net/measure", bodyFormData, { headers: { ...bodyFormData.getHeaders(), Authorization: 'Bearer ' + accessToken } });
-        if (response.data.status == 0) {
-            var mergedData = await processData(response.data.body);
-            await persistData(mergedData);
-            await storeTime(currentTime);
-        } else if (response.data.status == 401) { await getReplacementAccessToken(refreshToken); }
-    } catch (error) { console.log("Withings API Fetch Error:", error.message); }
-}
-
-module.exports = { getPreviousTimestamp, getReplacementAccessToken, storeTokens, storeTime, getWithingsData, persistData, processData };
+module.exports = { getPreviousTimestamp, getReplacementAccessToken, storeTokens, storeTime, processData, persistData };
