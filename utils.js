@@ -57,6 +57,8 @@ async function processData(scaleData) {
 async function writeCSVToDrive(mergedData) {
     const auth = new google.auth.GoogleAuth({ keyFile: config.gsheets_key_path, scopes: ['https://www.googleapis.com/auth/drive'] });
     const drive = google.drive({ version: 'v3', auth });
+    
+    // Final CSV Header
     const headerRow = "sep=,\ndate,Weight,Body Fat %,Heart Pulse,Pulse Wave Velocity (m/s),ECG,Vascular Age,Nerve Health Score\n";
     let fileId = null;
     let fileContent = "";
@@ -79,18 +81,21 @@ async function writeCSVToDrive(mergedData) {
             }
         }
         if (newContent.length > 0 || !fileId) {
-            const body = fileContent + newContent;
+            const body = (fileId ? fileContent : "") + newContent;
             if (fileId) await drive.files.update({ fileId, media: { mimeType: 'text/csv', body } });
-            else await drive.files.create({ resource: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body } });
+            else await drive.files.create({ resource: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: (headerRow + newContent) } });
         }
     } catch (e) { console.log("Drive Error:", e); }
 }
 
 async function persistData(mergedData) {
     for (var i = 0; i < mergedData.length; i++) {
+        // Scaling and rounding logic
         if (mergedData[i]["Weight"]) mergedData[i]["Weight"] = (mergedData[i]["Weight"] / 1000).toFixed(2);
         if (mergedData[i]["Body Fat %"]) mergedData[i]["Body Fat %"] = (mergedData[i]["Body Fat %"] / 1000).toFixed(2);
         if (mergedData[i]["Pulse Wave Velocity (m/s)"]) mergedData[i]["Pulse Wave Velocity (m/s)"] = (mergedData[i]["Pulse Wave Velocity (m/s)"] / 1000).toFixed(2);
+        
+        // Converts milli-score (81901) to standard score (81.9)
         if (mergedData[i]["Nerve Health Score"]) mergedData[i]["Nerve Health Score"] = (mergedData[i]["Nerve Health Score"] / 1000).toFixed(1);
 
         let d = new Date(mergedData[i].date * 1000);
