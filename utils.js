@@ -8,9 +8,7 @@ function getPreviousTimestamp() {
     try {
         let timestamp = fs.readFileSync(config.timestamp_path);
         return JSON.parse(timestamp);
-    } catch (err) { 
-        return 1577836800; // Start from 2020
-    }
+    } catch (err) { return 1577836800; }
 }
 
 async function getReplacementAccessToken(refreshToken) {
@@ -63,7 +61,8 @@ async function writeCSVToDrive(mergedData) {
     const auth = new google.auth.GoogleAuth({ keyFile: config.gsheets_key_path, scopes: ['https://www.googleapis.com/auth/drive'] });
     const drive = google.drive({ version: 'v3', auth });
     
-    const headerRow = "date,Weight,Body Fat %,Heart Pulse,Pulse Wave Velocity (m/s),ECG,Vascular Age,Nerve Health Score\n";
+    // Updated Header Row
+    const headerRow = "date,Weight,Body Fat %,Heart Pulse,PWV (m/s),ECG Result,QRS (ms),PR (ms),QT (ms),QTc (ms),Vascular Age,Nerve Health\n";
     let fileId = null;
     let fileContent = "";
 
@@ -82,20 +81,16 @@ async function writeCSVToDrive(mergedData) {
         let newRowsList = [];
         for (var k = 0; k < mergedData.length; k++) {
             if (!existingDates.includes(mergedData[k].date)) {
-                let row = `${mergedData[k].date},${mergedData[k]["Weight"]||""},${mergedData[k]["Body Fat %"]||""},${mergedData[k]["Heart Pulse"]||""},${mergedData[k]["Pulse Wave Velocity (m/s)"]||""},${mergedData[k]["ECG"]||""},${mergedData[k]["Vascular Age"]||""},${mergedData[k]["Nerve Health Score"]||mergedData[k]["Nerve Health Score (Advanced)"]||""}`;
+                let row = `${mergedData[k].date},${mergedData[k]["Weight"]||""},${mergedData[k]["Body Fat %"]||""},${mergedData[k]["Heart Pulse"]||""},${mergedData[k]["Pulse Wave Velocity (m/s)"]||""},${mergedData[k]["ECG Result"]||""},${mergedData[k]["QRS Interval (ms)"]||""},${mergedData[k]["PR Interval (ms)"]||""},${mergedData[k]["QT Interval (ms)"]||""},${mergedData[k]["QTc Interval (ms)"]||""},${mergedData[k]["Vascular Age"]||""},${mergedData[k]["Nerve Health Score"]||""}`;
                 newRowsList.push(row);
             }
         }
 
         if (newRowsList.length > 0) {
             const updatedBody = headerRow + newRowsList.join('\n') + '\n' + dataLinesOnly.join('\n');
-            if (fileId) {
-                await drive.files.update({ fileId, media: { mimeType: 'text/csv', body: updatedBody } });
-                console.log("CSV updated. Recent entries moved to top.");
-            } else {
-                await drive.files.create({ resource: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: updatedBody } });
-                console.log("New CSV created.");
-            }
+            if (fileId) await drive.files.update({ fileId, media: { mimeType: 'text/csv', body: updatedBody } });
+            else await drive.files.create({ resource: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: updatedBody } });
+            console.log("CSV Updated with advanced ECG metrics.");
         }
     } catch (e) { console.log("Drive Sync Error:", e.message); }
 }
@@ -112,25 +107,28 @@ async function persistData(mergedData) {
         if (mergedData[i]["Pulse Wave Velocity (m/s)"]) mergedData[i]["Pulse Wave Velocity (m/s)"] = (mergedData[i]["Pulse Wave Velocity (m/s)"] / 1000).toFixed(2);
         
         if (mergedData[i]["Nerve Health Score"]) mergedData[i]["Nerve Health Score"] = (mergedData[i]["Nerve Health Score"] / 1000).toFixed(1);
-        if (mergedData[i]["Nerve Health Score (Advanced)"]) mergedData[i]["Nerve Health Score (Advanced)"] = (mergedData[i]["Nerve Health Score (Advanced)"] / 1000).toFixed(1);
 
-        // --- FIXED VASCULAR AGE ---
         if (mergedData[i]["Vascular Age"]) {
-            let rawVAge = mergedData[i]["Vascular Age"];
-            // We divide by 10 to turn 401 into 40.1
-            mergedData[i]["Vascular Age"] = (rawVAge / 10).toFixed(1);
+            mergedData[i]["Vascular Age"] = (mergedData[i]["Vascular Age"] / 10).toFixed(1);
         }
 
-        // --- FIXED ECG MAPPING ---
-        if (mergedData[i]["ECG"] !== undefined) {
-            const res = mergedData[i]["ECG"];
-            // 0,1 = Normal. 5 = Sinus Tachycardia (High HR / No AFib)
-            if (res === 0 || res === 1 || res === 5) mergedData[i]["ECG"] = "Normal (High HR)";
-            else if (res === 2 || res === 4) mergedData[i]["ECG"] = "AFib Detected";
-            else if (res === 9) mergedData[i]["ECG"] = "Inconclusive (HR Low)";
-            else if (res === 10) mergedData[i]["ECG"] = "Inconclusive (HR High)";
-            else mergedData[i]["ECG"] = "Normal";
+        // ECG Logic from previous turn
+        if (mergedData[i]["ECG Result"] !== undefined) {
+            const res = mergedData[i]["ECG Result"];
+            if ([0, 1, 5, 10].includes(res)) mergedData[i]["ECG Result"] = "Normal (High HR)";
+            else if ([2, 4].includes(res)) mergedData[i]["ECG Result"] = "AFib Detected";
+            else if (res === 9) mergedData[i]["ECG Result"] = "Inconclusive (HR Low)";
+            else mergedData[i]["ECG Result"] = "Normal";
         }
+
+        // Scaling for millisecond intervals (Withings usually sends these as integers or /1000)
+        // If values appear as 0.15, multiply by 1000; here we assume raw ms.
+        ["QRS Interval (ms)", "PR Interval (ms)", "QT Interval (ms)", "QTc Interval (ms)"].forEach(key => {
+            if (mergedData[i][key]) {
+                 // Adjusting based on common API behavior (dividing by 1000 if stored in seconds)
+                 if (mergedData[i][key] < 2) mergedData[i][key] = (mergedData[i][key] * 1000).toFixed(0);
+            }
+        });
 
         let d = new Date(mergedData[i].date * 1000);
         let month = d.getMonth() + 1;
