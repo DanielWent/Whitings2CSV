@@ -13,6 +13,7 @@
     "dayjs": "^1.8.35",
     "express": "^4.17.1",
     "form-data": "^3.0.0",
+    "googleapis": "^67.0.0",
     "google-spreadsheet": "^3.0.13",
     "open": "^7.2.0",
     "sqlite3": "^5.0.0"
