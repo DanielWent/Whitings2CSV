@@ -2,7 +2,8 @@ name: Withings Daily Sync
 
 on:
   schedule:
-    - cron: '0 7 8 9 10 * * *' 
+    # Runs at 06:00, 07:00, 08:00, 09:00, and 10:00 UTC every day
+    - cron: '0 6,7,8,9,10 * * *' 
   workflow_dispatch:
     inputs:
       reset_sync:
