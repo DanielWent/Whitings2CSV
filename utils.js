@@ -36,7 +36,6 @@ function storeTime(latestTimestamp) {
     try { fs.writeFileSync(config.timestamp_path, JSON.stringify(latestTimestamp)); } catch (error) { console.log("Error storing timestamp", error) }
 }
 
-// FIXED: Signature matches how index.js calls it (3 arguments)
 async function getWithingsData(accessToken, refreshToken, currentTime) {
     const startdate = getPreviousTimestamp();
     const enddate = currentTime;
@@ -55,12 +54,10 @@ async function getWithingsData(accessToken, refreshToken, currentTime) {
         console.log(`Fetching data from ${new Date(startdate * 1000).toISOString()} to ${new Date(enddate * 1000).toISOString()}...`);
         const response = await axios.post("https://wbsapi.withings.net/measure", bodyFormData, { headers: { ...bodyFormData.getHeaders() } });
         
-        // Handle Invalid Token (401)
         if (response.data.status === 401) {
             console.log("Access Token Expired. Refreshing...");
             let newAccessToken = await getReplacementAccessToken(refreshToken);
             if (newAccessToken) {
-                // Retry with new token
                 return await getWithingsData(newAccessToken, refreshToken, currentTime);
             } else {
                 console.error("Failed to refresh token.");
@@ -72,8 +69,12 @@ async function getWithingsData(accessToken, refreshToken, currentTime) {
             let data = response.data.body;
             let mergedData = await processData(data);
             console.log(`Processed ${mergedData.length} new entries.`);
-            await persistData(mergedData);
-            await storeTime(currentTime);
+            if (mergedData.length > 0) {
+                await persistData(mergedData);
+                await storeTime(currentTime);
+            } else {
+                console.log("No new data found in this time range.");
+            }
             return data;
         } else {
             console.log("API Error Status:", response.data.status);
@@ -95,20 +96,14 @@ async function processData(scaleData) {
                 let metricName = config.metrics[measure.type];
                 
                 if (metricName) {
-                    // Universal Power-of-10 Scaling
                     let val = measure.value * Math.pow(10, measure.unit);
                     singleEntry[metricName] = val;
 
-                    // Calculate BMI automatically if Weight is present
                     if (metricName === "Weight (kg)" && config.height) {
                         singleEntry["BMI"] = val / (config.height * config.height);
                     }
                     
                     simplifiedData.push(singleEntry);
-                } else {
-                    // DEBUG: If you see this in console, it means we found a metric ID we don't know about yet.
-                    // This is useful to find the REAL ID for Visceral Fat if "12" is wrong.
-                     console.log(`[Info] Unmapped Metric Found: Type ${measure.type}, Value ${measure.value}`);
                 }
             });
         });
@@ -132,14 +127,30 @@ async function writeCSVToDrive(mergedData) {
     let fileContent = "";
 
     try {
-        const listRes = await drive.files.list({ q: `'${config.driveFolderId}' in parents and name = '${config.driveFileName}' and trashed = false`, fields: 'files(id, name)' });
-        if (listRes.data.files.length > 0) fileId = listRes.data.files[0].id;
-
-        if (fileId) {
+        const listRes = await drive.files.list({ 
+            q: `'${config.driveFolderId}' in parents and name = '${config.driveFileName}' and trashed = false`, 
+            fields: 'files(id, name)' 
+        });
+        
+        if (listRes.data.files.length > 0) {
+            fileId = listRes.data.files[0].id;
+            console.log(`Found file on Drive: ${config.driveFileName} (ID: ${fileId})`);
+            
             const getRes = await drive.files.get({ fileId: fileId, alt: 'media' });
             fileContent = getRes.data;
+            
+            // Ensure fileContent is a string
+            if (typeof fileContent !== 'string') {
+                fileContent = ""; 
+            }
         } else {
-            fileContent = headerRow;
+            console.log("File not found on Drive. A new one will be created.");
+        }
+
+        // If file is empty or missing headers, force headers
+        if (!fileContent || !fileContent.startsWith("date,")) {
+            console.log("File is empty or missing headers. Prepending headers.");
+            fileContent = headerRow + (fileContent || "");
         }
 
         let newContent = "";
@@ -148,7 +159,9 @@ async function writeCSVToDrive(mergedData) {
         const lines = fileContent.split('\n');
         lines.forEach(line => {
             const parts = line.split(',');
-            if (parts.length > 0 && parts[0] !== 'date') existingDates.add(parts[0]);
+            if (parts.length > 0 && parts[0] !== 'date' && parts[0].trim() !== "") {
+                existingDates.add(parts[0].trim());
+            }
         });
 
         mergedData.forEach(item => {
@@ -165,15 +178,28 @@ async function writeCSVToDrive(mergedData) {
         });
 
         if (newContent.length > 0) {
+            console.log(`Preparing to write ${newContent.split('\n').length - 1} rows to Drive...`);
+            // Debug: Show first row being written
+            console.log(`Sample Row: ${newContent.split('\n')[0]}`);
+
             if (fileId) {
-                await drive.files.update({ fileId: fileId, media: { mimeType: 'text/csv', body: fileContent + newContent } });
-                console.log("Updated existing CSV on Drive.");
+                // We write the FULL content (Old + New)
+                const fullBody = fileContent + newContent;
+                await drive.files.update({ 
+                    fileId: fileId, 
+                    media: { mimeType: 'text/csv', body: fullBody } 
+                });
+                console.log("Successfully updated existing CSV on Drive.");
             } else {
-                await drive.files.create({ requestBody: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: headerRow + newContent } });
-                console.log("Created new CSV on Drive.");
+                const fullBody = headerRow + newContent;
+                await drive.files.create({ 
+                    requestBody: { name: config.driveFileName, parents: [config.driveFolderId] }, 
+                    media: { mimeType: 'text/csv', body: fullBody } 
+                });
+                console.log("Successfully created new CSV on Drive.");
             }
         } else {
-            console.log("No new data to append (CSV is up to date).");
+            console.log("No new unique data to append to Drive file.");
         }
 
     } catch (error) { console.log("Drive Error:", error.message); }
