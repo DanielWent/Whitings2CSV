@@ -2,7 +2,7 @@ name: Withings Daily Sync
 
 on:
   schedule:
-    - cron: '0 8 * * *' # Runs every day at 8:00 AM UTC
+    - cron: '0 8 * * *' 
   workflow_dispatch: 
 
 permissions:
@@ -11,7 +11,6 @@ permissions:
 jobs:
   run-sync:
     runs-on: ubuntu-latest
-
     steps:
     - name: Checkout Code
       uses: actions/checkout@v3
@@ -30,17 +29,18 @@ jobs:
         echo '${{ secrets.GDRIVE_CREDS }}' > .withings2gsheets/withings2gsheets-service-account.json
 
     - name: Run Sync
-      # UPDATE: Pass the secrets as environment variables here
       env:
         WITHINGS_CLIENT_ID: ${{ secrets.WITHINGS_CLIENT_ID }}
         WITHINGS_CLIENT_SECRET: ${{ secrets.WITHINGS_CLIENT_SECRET }}
       run: node index.js
 
-    - name: Commit Updated Tokens
+    - name: Commit Updated State
+      # FIX: Now saves both Tokens AND the last-run Timestamp
       if: success()
       run: |
         git config --global user.name 'GitHub Actions'
         git config --global user.email 'actions@github.com'
         git add .withings2gsheets/withings2gsheetstokens.json
-        git commit -m "Auto-update Withings tokens [skip ci]" || exit 0
+        git add .withings2gsheets/withingsprevioustime.json
+        git commit -m "Auto-update Withings state [skip ci]" || exit 0
         git push
