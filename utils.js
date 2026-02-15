@@ -70,7 +70,7 @@ async function getWithingsData(accessToken, refreshToken, currentTime) {
             let mergedData = await processData(data);
             console.log(`Processed ${mergedData.length} new entries.`);
             
-            // ALWAYS try to persist if we have data OR if we need to fix the file headers
+            // Proceed to write step even if mergedData is empty, to verify file integrity if needed
             if (mergedData.length > 0) {
                 await persistData(mergedData);
                 await storeTime(currentTime);
@@ -131,23 +131,39 @@ async function writeCSVToDrive(mergedData) {
     try {
         const listRes = await drive.files.list({ 
             q: `'${config.driveFolderId}' in parents and name = '${config.driveFileName}' and trashed = false`, 
-            fields: 'files(id, name)' 
+            fields: 'files(id, name, size, modifiedTime)' 
         });
         
         if (listRes.data.files.length > 0) {
+            // DUPLICATE CHECK
+            if (listRes.data.files.length > 1) {
+                console.warn(`[WARNING] Found ${listRes.data.files.length} files named '${config.driveFileName}'. Using the first one.`);
+                console.warn(`File 1 ID: ${listRes.data.files[0].id} (Size: ${listRes.data.files[0].size || 0} bytes)`);
+                console.warn(`File 2 ID: ${listRes.data.files[1].id} (Size: ${listRes.data.files[1].size || 0} bytes)`);
+            }
+
             fileId = listRes.data.files[0].id;
-            console.log(`Found file on Drive: ${config.driveFileName} (ID: ${fileId})`);
+            console.log(`Targeting Drive File ID: ${fileId}`);
             
-            const getRes = await drive.files.get({ fileId: fileId, alt: 'media' });
+            // EXPLICITLY request as text to avoid object confusion
+            const getRes = await drive.files.get({ fileId: fileId, alt: 'media' }, { responseType: 'text' });
             fileContent = getRes.data;
-            if (typeof fileContent !== 'string') fileContent = ""; 
+            
+            // DEBUG: Show what we actually got
+            if (typeof fileContent === 'string') {
+                console.log(`[DEBUG] Downloaded content length: ${fileContent.length} chars.`);
+                console.log(`[DEBUG] First 100 chars: "${fileContent.substring(0, 100).replace(/\n/g, '\\n')}"`);
+            } else {
+                console.log(`[DEBUG] Downloaded content is NOT a string. Type: ${typeof fileContent}`);
+                fileContent = ""; 
+            }
         } else {
             console.log("File not found on Drive. Creating new file.");
         }
 
-        // === SIMPLIFIED LOGIC: If file is empty, FORCE write fresh CSV ===
-        if (!fileContent || fileContent.trim().length === 0) {
-            console.log("Drive file is empty. Writing HEADERS + DATA from scratch.");
+        // Logic: Treat whitespace-only or extremely short files as "empty"
+        if (!fileContent || typeof fileContent !== 'string' || fileContent.trim().length < 5) {
+            console.log("Drive file deemed EMPTY. Overwriting with Headers + Data.");
             
             let fullBody = headerRow;
             mergedData.forEach(item => {
@@ -165,20 +181,22 @@ async function writeCSVToDrive(mergedData) {
                 await drive.files.create({ requestBody: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: fullBody } });
             }
             console.log("Successfully initialized CSV on Drive.");
-            return; // Exit function after force write
+            return;
         }
 
-        // === EXISTING APPEND LOGIC (Only runs if file had content) ===
-        console.log("Drive file has content. Checking for new rows...");
+        // --- APPEND LOGIC ---
+        console.log("Drive file has content. Merging...");
         
-        // Ensure headers exist in the current file content, if not prepend them in memory
+        // Ensure headers exist
         if (!fileContent.startsWith("date,")) {
+             console.log("Headers missing in file. Prepending...");
              fileContent = headerRow + fileContent;
         }
 
         let newContent = "";
         let existingDates = new Set();
         const lines = fileContent.split('\n');
+        
         lines.forEach(line => {
             const parts = line.split(',');
             if (parts.length > 0 && parts[0] !== 'date' && parts[0].trim() !== "") {
@@ -186,7 +204,7 @@ async function writeCSVToDrive(mergedData) {
             }
         });
 
-        console.log(`Found ${existingDates.size} existing entries in Drive file.`);
+        console.log(`[DEBUG] Parsed ${existingDates.size} existing unique dates from Drive file.`);
 
         mergedData.forEach(item => {
             let d = new Date(item.date * 1000);
@@ -237,6 +255,7 @@ async function persistData(mergedData) {
         if (!existingDates.has(formattedDate)) {
             let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
             let visceral = item["Visceral Fat Rating"] || "";
+            
             newLines += `${formattedDate},${item["Weight (kg)"]||""},${bmi},${item["Body Fat (%)"]||""},${visceral},${item["Pulse Wave Velocity (m/s)"]||""},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}\n`;
         }
     });
