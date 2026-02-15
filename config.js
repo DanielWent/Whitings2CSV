@@ -30,7 +30,7 @@ config.metrics = {
     "9": "Diastolic Blood Pressure (mmHg)",
     "10": "Systolic Blood Pressure (mmHg)",
     "11": "Heart Pulse (bpm)",
-    "12": "Visceral Fat Rating", // Mapped for Body Scan
+    "12": "Visceral Fat Rating", // Likely incorrect, but kept for now.
     "54": "SP02 (%)",
     "71": "Body Temperature (celsius)",
     "73": "Skin Temperature (celsius)",
@@ -44,7 +44,7 @@ config.metrics = {
     "158": "Nerve Health Score"
 };
 
-// List of metrics to fetch (comma-separated IDs)
-config.metricList = "1,4,5,6,8,9,10,11,12,54,71,73,76,77,88,91,123,130,155,158";
+// COMMENTED OUT to force fetching ALL metrics for discovery
+// config.metricList = "1,4,5,6,8,9,10,11,12,54,71,73,76,77,88,91,123,130,155,158";
 
 module.exports = config;
