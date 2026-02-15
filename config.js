@@ -20,7 +20,7 @@ config.csv_output_path = config.data_dir + "withings_data.csv";
 // User Height (185 cm)
 config.height = 1.85; 
 
-// Metric Type IDs to Name mapping
+// Metric Type IDs for Withings Body Scan
 config.metrics = {
     "1": "Weight (kg)",
     "6": "Body Fat (%)",
