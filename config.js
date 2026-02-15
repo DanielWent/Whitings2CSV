@@ -13,6 +13,10 @@ config.output_dir = config.data_dir + ".withings2gsheets/";
 config.token_path = config.output_dir + "withings2gsheetstokens.json";
 config.timestamp_path = config.output_dir + "withingsprevioustime.json";
 
+// --- FIXED: Restored the missing credentials path ---
+config.gsheets_key_path = config.output_dir + "withings2gsheets-service-account.json";
+// ----------------------------------------------------
+
 // Removed Heart Rate (11)
 config.metrics = {
    "1": "Weight (kg)",
