@@ -46,9 +46,10 @@ async function getWithingsData(accessToken, refreshToken, currentTime) {
     bodyFormData.append('startdate', startdate);
     bodyFormData.append('enddate', enddate);
     
-    if (config.metricList) {
-        bodyFormData.append('meastypes', config.metricList);
-    }
+    // FETCH EVERYTHING (No 'meastypes' filter) to find Visceral Fat
+    // if (config.metricList) {
+    //    bodyFormData.append('meastypes', config.metricList);
+    // }
 
     try {
         console.log(`Fetching data from ${new Date(startdate * 1000).toISOString()} to ${new Date(enddate * 1000).toISOString()}...`);
@@ -70,7 +71,7 @@ async function getWithingsData(accessToken, refreshToken, currentTime) {
             let mergedData = await processData(data);
             console.log(`Processed ${mergedData.length} new entries.`);
             
-            // Proceed to write step to ensure file integrity (fix bad headers/newlines)
+            // Proceed to write step to ensure file integrity
             await persistData(mergedData);
             await storeTime(currentTime);
             
@@ -89,6 +90,18 @@ async function getWithingsData(accessToken, refreshToken, currentTime) {
 async function processData(scaleData) {
     let simplifiedData = [];
     if (scaleData && scaleData.measuregrps) {
+        
+        // DEBUG: Log the first group to help find Visceral Fat ID
+        if(scaleData.measuregrps.length > 0) {
+             console.log("--- DEBUG: First Measurement Group Data ---");
+             scaleData.measuregrps[0].measures.forEach(m => {
+                 let mapped = config.metrics[m.type] || "UNKNOWN";
+                 let rawVal = m.value * Math.pow(10, m.unit);
+                 console.log(`ID: ${m.type} | Value: ${rawVal} | Mapped To: ${mapped}`);
+             });
+             console.log("-------------------------------------------");
+        }
+
         scaleData.measuregrps.forEach(grp => {
             grp.measures.forEach(measure => {
                 let singleEntry = { date: grp.date };
@@ -96,8 +109,24 @@ async function processData(scaleData) {
                 
                 if (metricName) {
                     let val = measure.value * Math.pow(10, measure.unit);
+
+                    // === LOGIC RESTORATION ===
+                    
+                    // 1. Body Fat Correction (+3%)
+                    if (metricName === "Body Fat (%)") {
+                        val = val + 3;
+                    }
+
+                    // 2. AFib Interpretation
+                    if (metricName === "AFib Status") {
+                        if ([2, 4].includes(val)) val = "AFib Detected";
+                        else if ([0, 1, 5, 10].includes(val)) val = "AFib Not Detected";
+                        else val = "Inconclusive";
+                    }
+
                     singleEntry[metricName] = val;
 
+                    // 3. BMI Calculation
                     if (metricName === "Weight (kg)" && config.height) {
                         singleEntry["BMI"] = val / (config.height * config.height);
                     }
@@ -117,16 +146,17 @@ async function processData(scaleData) {
     return result;
 }
 
-// Helper to format a row from an object
 function formatRow(item) {
     let d = new Date(item.date * 1000);
-    // Format: YYYY-MM-DD HH:mm:ss
     let formattedDate = d.toISOString().replace('T', ' ').substring(0, 19);
     
+    // Formatting numbers
     let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
+    let bf = typeof item["Body Fat (%)"] === 'number' ? item["Body Fat (%)"].toFixed(2) : (item["Body Fat (%)"] || "");
     let visceral = item["Visceral Fat Rating"] || "";
+    let pwv = typeof item["Pulse Wave Velocity (m/s)"] === 'number' ? item["Pulse Wave Velocity (m/s)"].toFixed(2) : (item["Pulse Wave Velocity (m/s)"] || "");
     
-    return `${formattedDate},${item["Weight (kg)"]||""},${bmi},${item["Body Fat (%)"]||""},${visceral},${item["Pulse Wave Velocity (m/s)"]||""},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}`;
+    return `${formattedDate},${item["Weight (kg)"]||""},${bmi},${bf},${visceral},${pwv},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}`;
 }
 
 async function writeCSVToDrive(mergedData) {
@@ -145,78 +175,45 @@ async function writeCSVToDrive(mergedData) {
         
         if (listRes.data.files.length > 0) {
             fileId = listRes.data.files[0].id;
-            console.log(`Found file on Drive: ${config.driveFileName} (ID: ${fileId})`);
             const getRes = await drive.files.get({ fileId: fileId, alt: 'media' }, { responseType: 'text' });
             fileContent = typeof getRes.data === 'string' ? getRes.data : "";
         } else {
             console.log("File not found on Drive. Creating new file.");
         }
 
-        // --- ROBUST MERGE STRATEGY ---
-        // 1. Parse existing file content into a Map (Date -> Row String)
-        // 2. Add/Overwrite with new data from mergedData
-        // 3. Sort by Date
-        // 4. Rewrite entire file
-        
         let allRowsMap = new Map();
 
-        // Step 1: Parse Existing
+        // Parse Existing
         if (fileContent && fileContent.trim().length > 0) {
-            // Split by newline and remove empty lines
             let lines = fileContent.split(/\r?\n/).filter(line => line.trim().length > 0);
-            
             lines.forEach(line => {
-                if (line.startsWith("date,")) return; // Skip header
+                if (line.startsWith("date,")) return;
                 let parts = line.split(',');
                 let dateStr = parts[0];
-                if (dateStr) {
-                    allRowsMap.set(dateStr, line);
-                }
+                if (dateStr) allRowsMap.set(dateStr, line);
             });
-            console.log(`Read ${allRowsMap.size} valid rows from existing Drive file.`);
         }
 
-        // Step 2: Merge New Data
-        let newCount = 0;
+        // Merge New Data
         mergedData.forEach(item => {
             let rowStr = formatRow(item);
-            let dateStr = rowStr.split(',')[0]; // Extract the formatted date "2023-01-01 12:00:00"
-            
-            if (!allRowsMap.has(dateStr)) {
-                newCount++;
-            }
-            // We set (overwrite) the row to ensure we have the latest format/columns
+            let dateStr = rowStr.split(',')[0];
             allRowsMap.set(dateStr, rowStr);
         });
 
-        console.log(`Merging... Total rows: ${allRowsMap.size} (Updated/New from this run: ${mergedData.length})`);
+        // Sort
+        let sortedDates = Array.from(allRowsMap.keys()).sort((a, b) => new Date(b) - new Date(a));
 
-        // Step 3: Sort
-        // Convert Map keys to array, sort descending (newest first)
-        let sortedDates = Array.from(allRowsMap.keys()).sort((a, b) => {
-            return new Date(b) - new Date(a);
-        });
-
-        // Step 4: Reconstruct CSV
+        // Reconstruct
         let fullCSV = headerRow + "\n";
-        sortedDates.forEach(date => {
-            fullCSV += allRowsMap.get(date) + "\n";
-        });
+        sortedDates.forEach(date => fullCSV += allRowsMap.get(date) + "\n");
 
-        // Step 5: Write to Drive
-        // We use 'update' if file exists, 'create' if not.
-        // We ALWAYS write if there is data, to fix potential formatting/newline issues in the saved file.
+        // Write
         if (fileId) {
-            await drive.files.update({ 
-                fileId: fileId, 
-                media: { mimeType: 'text/csv', body: fullCSV } 
-            });
+            await drive.files.update({ fileId: fileId, media: { mimeType: 'text/csv', body: fullCSV } });
             console.log("Successfully overwrote Drive file with cleaned & sorted data.");
         } else {
-            await drive.files.create({ 
-                requestBody: { name: config.driveFileName, parents: [config.driveFolderId] }, 
-                media: { mimeType: 'text/csv', body: fullCSV } 
-            });
+            await drive.files.create({ requestBody: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: fullCSV } });
             console.log("Successfully created new cleaned CSV on Drive.");
         }
 
@@ -224,24 +221,13 @@ async function writeCSVToDrive(mergedData) {
 }
 
 async function persistData(mergedData) {
-    if (mergedData.length === 0) {
-        // Even if no new data, we might want to trigger a drive sync to clean the file
-        // But usually we need at least some data context.
-        // If the user is running a Reset, mergedData has everything. 
-        // If incremental, it might be empty.
-        // Let's rely on writeCSVToDrive to handle the file check if we pass it an empty array? 
-        // No, let's just return if truly empty to save API calls, unless we want to force a fix.
-        // For now, let's assume we only sync if we fetched *something*.
-        return;
-    }
+    if (mergedData.length === 0) return;
 
-    // 1. Save to Local CSV (Append mode is fine for local logging)
+    // 1. Save to Local CSV
     if (!fs.existsSync(config.csv_output_path)) {
         fs.writeFileSync(config.csv_output_path, "date,Weight (kg),BMI,Body Fat (%),Visceral Fat Rating,Pulse Wave Velocity (m/s),AFib Status,Vascular Age (years),Nerve Health Score\n");
     }
 
-    // We can just append to local for simplicity, or repeat the robust logic.
-    // Keeping local simple (append) as it's mostly for debug/backup.
     let existingFileContent = fs.readFileSync(config.csv_output_path, 'utf8');
     let existingDates = new Set();
     existingFileContent.split('\n').forEach(line => {
@@ -263,7 +249,7 @@ async function persistData(mergedData) {
         console.log("Appended to local CSV.");
     }
 
-    // 2. Save to Google Drive (Robust Overwrite)
+    // 2. Save to Google Drive
     await writeCSVToDrive(mergedData);
 }
 
