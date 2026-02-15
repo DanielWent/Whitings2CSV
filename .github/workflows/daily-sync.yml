@@ -2,7 +2,7 @@ name: Withings Daily Sync
 
 on:
   schedule:
-    - cron: '0 8 * * *' 
+    - cron: '0 7 8 9 10 * * *' 
   workflow_dispatch:
     inputs:
       reset_sync:
