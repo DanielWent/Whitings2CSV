@@ -12,15 +12,14 @@ config.data_dir = "./";
 config.output_dir = config.data_dir + ".withings2gsheets/";
 config.token_path = config.output_dir + "withings2gsheetstokens.json";
 config.timestamp_path = config.output_dir + "withingsprevioustime.json";
-config.gsheets_key_path = config.output_dir + "withings2gsheets-service-account.json";
 
 // Removed Heart Rate (11)
 config.metrics = {
    "1": "Weight (kg)",
    "6": "Body Fat (%)",
-   "91": "PWV (m/s)",       
+   "91": "Pulse Wave Velocity (m/s)",       
    "130": "AFib Status",
-   "155": "Vascular Age",
+   "155": "Vascular Age (years)",
    "158": "Nerve Health Score"
 };
 
