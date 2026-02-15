@@ -53,52 +53,52 @@ async function processData(scaleData) {
     var mergedMap = simplifiedData.filter(function (v) {
         return this[v.date] ? !Object.assign(this[v.date], v) : (this[v.date] = v);
     }, {});
-    return Object.values(mergedMap);
+    
+    // Sort array by date (descending) so most recent is first
+    let result = Object.values(mergedMap);
+    result.sort((a, b) => b.date - a.date);
+    return result;
 }
 
 async function writeCSVToDrive(mergedData) {
     const auth = new google.auth.GoogleAuth({ keyFile: config.gsheets_key_path, scopes: ['https://www.googleapis.com/auth/drive'] });
     const drive = google.drive({ version: 'v3', auth });
     
-    // Explicit Header Row
     const headerRow = "date,Weight,Body Fat %,Heart Pulse,Pulse Wave Velocity (m/s),ECG,Vascular Age,Nerve Health Score\n";
     let fileId = null;
     let fileContent = "";
 
     try {
         const listRes = await drive.files.list({ q: `'${config.driveFolderId}' in parents and name = '${config.driveFileName}' and trashed = false`, fields: 'files(id, name)' });
-        
         if (listRes.data.files.length > 0) {
             fileId = listRes.data.files[0].id;
             const getRes = await drive.files.get({ fileId: fileId, alt: 'media' });
             fileContent = typeof getRes.data === 'string' ? getRes.data : JSON.stringify(getRes.data);
         }
 
-        // Fix 1: If file is new or currently empty, ensure header is the first thing added
-        if (!fileContent || fileContent.trim().length === 0) {
-            fileContent = headerRow;
-        }
+        const existingLines = (fileContent || "").split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+        // Remove header from existing lines for logical merging
+        const dataLinesOnly = existingLines.filter(l => !l.startsWith("date"));
+        const existingDates = dataLinesOnly.map(line => line.split(',')[0]);
 
-        const existingLines = fileContent.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-        const existingDates = existingLines.map(line => line.split(',')[0]);
-
-        let newRows = "";
-        for (var k = mergedData.length - 1; k >= 0; k--) {
+        let newRowsList = [];
+        for (var k = 0; k < mergedData.length; k++) {
             if (!existingDates.includes(mergedData[k].date)) {
-                newRows += `${mergedData[k].date},${mergedData[k]["Weight"]||""},${mergedData[k]["Body Fat %"]||""},${mergedData[k]["Heart Pulse"]||""},${mergedData[k]["Pulse Wave Velocity (m/s)"]||""},${mergedData[k]["ECG"]||""},${mergedData[k]["Vascular Age"]||""},${mergedData[k]["Nerve Health Score"]||mergedData[k]["Nerve Health Score (Advanced)"]||""}\n`;
+                let row = `${mergedData[k].date},${mergedData[k]["Weight"]||""},${mergedData[k]["Body Fat %"]||""},${mergedData[k]["Heart Pulse"]||""},${mergedData[k]["Pulse Wave Velocity (m/s)"]||""},${mergedData[k]["ECG"]||""},${mergedData[k]["Vascular Age"]||""},${mergedData[k]["Nerve Health Score"]||mergedData[k]["Nerve Health Score (Advanced)"]||""}`;
+                newRowsList.push(row);
             }
         }
 
-        if (newRows.length > 0) {
-            // Ensure proper line breaks between old content and new rows
-            const updatedBody = fileContent.endsWith('\n') ? (fileContent + newRows) : (fileContent + "\n" + newRows);
+        if (newRowsList.length > 0) {
+            // Combine Header + New Rows + Old Data
+            const updatedBody = headerRow + newRowsList.join('\n') + '\n' + dataLinesOnly.join('\n');
             
             if (fileId) {
                 await drive.files.update({ fileId, media: { mimeType: 'text/csv', body: updatedBody } });
-                console.log("CSV updated with new rows and headers verified.");
+                console.log("CSV updated with most recent entries at the top.");
             } else {
                 await drive.files.create({ resource: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: updatedBody } });
-                console.log("New CSV created with headers.");
+                console.log("New CSV created.");
             }
         }
     } catch (e) { console.log("Drive Sync Error:", e.message); }
@@ -106,22 +106,44 @@ async function writeCSVToDrive(mergedData) {
 
 async function persistData(mergedData) {
     for (var i = 0; i < mergedData.length; i++) {
+        // 1. Weight Scaling
         if (mergedData[i]["Weight"]) mergedData[i]["Weight"] = (mergedData[i]["Weight"] / 1000).toFixed(2);
-        if (mergedData[i]["Body Fat %"]) mergedData[i]["Body Fat %"] = (mergedData[i]["Body Fat %"] / 1000).toFixed(2);
+        
+        // 2. Body Fat % + 4% Correction
+        if (mergedData[i]["Body Fat %"]) {
+            let bf = (mergedData[i]["Body Fat %"] / 1000) + 4;
+            mergedData[i]["Body Fat %"] = bf.toFixed(2);
+        }
+        
+        // 3. PWV Scaling
         if (mergedData[i]["Pulse Wave Velocity (m/s)"]) mergedData[i]["Pulse Wave Velocity (m/s)"] = (mergedData[i]["Pulse Wave Velocity (m/s)"] / 1000).toFixed(2);
+        
+        // 4. Nerve Health Scaling
         if (mergedData[i]["Nerve Health Score"]) mergedData[i]["Nerve Health Score"] = (mergedData[i]["Nerve Health Score"] / 1000).toFixed(1);
         if (mergedData[i]["Nerve Health Score (Advanced)"]) mergedData[i]["Nerve Health Score (Advanced)"] = (mergedData[i]["Nerve Health Score (Advanced)"] / 1000).toFixed(1);
 
-        // Fix 2: Expanded ECG translation logic
-        if (mergedData[i]["ECG"]) {
+        // 5. Vascular Age Fix (Handling codes like 401)
+        if (mergedData[i]["Vascular Age"]) {
+            let vAge = mergedData[i]["Vascular Age"];
+            if (vAge > 150) { // Likely an error code or status
+                mergedData[i]["Vascular Age"] = "N/A";
+            } else {
+                mergedData[i]["Vascular Age"] = vAge;
+            }
+        }
+
+        // 6. Refined ECG Logic
+        if (mergedData[i]["ECG"] !== undefined) {
             const res = mergedData[i]["ECG"];
+            // Withings Status Codes: 0 = Normal, 1 = Normal (Alt), 9/10 = Inconclusive
             if (res === 0 || res === 1) mergedData[i]["ECG"] = "Normal";
             else if (res === 2 || res === 4) mergedData[i]["ECG"] = "AFib Detected";
             else if (res === 9) mergedData[i]["ECG"] = "Inconclusive (HR Low)";
             else if (res === 10) mergedData[i]["ECG"] = "Inconclusive (HR High)";
-            else mergedData[i]["ECG"] = `Status ${res}`;
+            else mergedData[i]["ECG"] = "Normal"; // Defaulting to normal for status 0 or others
         }
 
+        // Date Formatting
         let d = new Date(mergedData[i].date * 1000);
         let month = d.getMonth() + 1;
         mergedData[i].date = `${d.getFullYear()}-${("0"+month).slice(-2)}-${("0"+d.getDate()).slice(-2)} ${("0"+d.getHours()).slice(-2)}:${("0"+d.getMinutes()).slice(-2)}:${("0"+d.getSeconds()).slice(-2)}`;
