@@ -5,6 +5,7 @@ const fs = require("fs");
 const axios = require('axios');
 const sqlite3 = require('sqlite3').verbose();
 
+// Replaced LevelDB with SQLite
 let db = new sqlite3.Database(config.sqlite3_output_path, (err) => {
     if (err) console.error(err.message);
 });
@@ -30,7 +31,7 @@ async function getReplacementAccessToken(refreshToken) {
         const response = await axios.post("https://wbsapi.withings.net/v2/oauth2", bodyFormData, {
             headers: { ...bodyFormData.getHeaders() }
         })
-        if (response.data.body.access_token && response.data.body.refresh_token) {
+        if (response.data.body && response.data.body.access_token) {
             storeTokens(response.data.body.access_token, response.data.body.refresh_token);
         }
     } catch (error) {
@@ -78,6 +79,7 @@ async function processData(scaleData) {
     return Object.values(mergedData);
 }
 
+// Logic to write directly to Google Drive
 async function writeCSVToDrive(mergedData) {
     console.log("Syncing with Google Drive...");
     const auth = new google.auth.GoogleAuth({
@@ -151,13 +153,13 @@ async function writeCSVToDrive(mergedData) {
 async function persistData(mergedData) {
     console.log("Persisting data...");
     for (var i = 0, len = mergedData.length; i < len; i++) {
-        // Unit Scaling
+        // Unit Scaling and Fixed Decimals
         if (mergedData[i]["Weight"]) mergedData[i]["Weight"] = (mergedData[i]["Weight"] / 1000).toFixed(2);
         if (mergedData[i]["Body Fat %"]) mergedData[i]["Body Fat %"] = (mergedData[i]["Body Fat %"] / 1000).toFixed(2);
         if (mergedData[i]["Pulse Wave Velocity (m/s)"]) mergedData[i]["Pulse Wave Velocity (m/s)"] = (mergedData[i]["Pulse Wave Velocity (m/s)"] / 1000).toFixed(2);
         if (mergedData[i]["Nerve Health Score"]) mergedData[i]["Nerve Health Score"] = (mergedData[i]["Nerve Health Score"] / 1000).toFixed(1);
 
-        // Date Formatting
+        // Standardized Date Formatting
         let d = new Date(mergedData[i].date * 1000);
         let month = d.getMonth() + 1;
         mergedData[i].date = d.getFullYear() + "-" + ("0" + month).slice(-2) + "-" + ("0" + d.getDate()).slice(-2) + " " + ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) + ":" + ("0" + d.getSeconds()).slice(-2);
