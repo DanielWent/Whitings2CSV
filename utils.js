@@ -6,23 +6,21 @@ const axios = require('axios');
 const sqlite3 = require('sqlite3').verbose();
 let conor = require('./conor.js');
 
-// Replaced LevelDB with SQLite due to clash with Dropbox syncing
+// SQLite connection
 let db = new sqlite3.Database(config.sqlite3_output_path, (err) => {
-    if (err) {
-        console.error(err.message);
-    }
-    console.log('Connected to sqlite3.');
+    if (err) console.error(err.message);
+    else console.log('Connected to sqlite3.');
 });
 
 // Find out when the code was last run
 function getPreviousTimestamp() {
     try {
         timestamp = fs.readFileSync(config.timestamp_path);
+        let previousTimestamp = JSON.parse(timestamp);
+        return previousTimestamp;
     } catch (err) {
-        return 0;
+        return 0; // If file doesn't exist, start from 1970
     }
-    let previousTimestamp = JSON.parse(timestamp);
-    return previousTimestamp;
 }
 
 // If access token is no longer working, then this is called.
@@ -41,7 +39,7 @@ async function getReplacementAccessToken(refreshToken) {
         const accessToken = response.data.body.access_token;
         const refreshToken = response.data.body.refresh_token;
 
-        if ((typeof accessToken !== "undefined") && (typeof refreshToken !== "undefined")) {
+        if (accessToken && refreshToken) {
             storeTokens(accessToken, refreshToken);
         } else {
             console.log("Error getting new Access and refresh tokens")
@@ -51,7 +49,6 @@ async function getReplacementAccessToken(refreshToken) {
     }
 }
 
-// Stores the Withings tokens in a file
 async function storeTokens(accessToken, refreshToken) {
     try {
         fs.writeFileSync(config.token_path, JSON.stringify({ accessToken, refreshToken }));
@@ -60,7 +57,6 @@ async function storeTokens(accessToken, refreshToken) {
     }
 }
 
-// Stores most recent execution timestamp to a file
 async function storeTime(latestTimestamp) {
     try {
         fs.writeFileSync(config.timestamp_path, JSON.stringify(latestTimestamp));
@@ -69,19 +65,20 @@ async function storeTime(latestTimestamp) {
     }
 }
 
-// Process the data returned by Withings API so it is easier to deal with.
 async function processData(scaleData) {
-    console.log("Processing data from Withings API");
+    console.log("Processing data from Withings API...");
 
     let simplifiedData = [];
-    for (var i = 0; i < scaleData.measuregrps.length; i++) {
-        for (var j = 0; j < scaleData.measuregrps[i].measures.length; j++) {
-            let singleEntry = {};
-            singleEntry.date = scaleData.measuregrps[i].date;
-            let metric = config.metrics[scaleData.measuregrps[i].measures[j].type];
-            if(metric) {
-                singleEntry[metric] = scaleData.measuregrps[i].measures[j].value;
-                simplifiedData.push(singleEntry);
+    if (scaleData.measuregrps) {
+        for (var i = 0; i < scaleData.measuregrps.length; i++) {
+            for (var j = 0; j < scaleData.measuregrps[i].measures.length; j++) {
+                let singleEntry = {};
+                singleEntry.date = scaleData.measuregrps[i].date;
+                let metric = config.metrics[scaleData.measuregrps[i].measures[j].type];
+                if(metric) {
+                    singleEntry[metric] = scaleData.measuregrps[i].measures[j].value;
+                    simplifiedData.push(singleEntry);
+                }
             }
         }
     }
@@ -92,6 +89,10 @@ async function processData(scaleData) {
             (this[v.date] = v);
     }, {});
 
+    // Turn object back into array
+    mergedData = Object.values(mergedData);
+    
+    console.log(`Found ${mergedData.length} valid measurement groups.`);
     return (mergedData);
 }
 
@@ -99,7 +100,6 @@ async function processData(scaleData) {
 async function writeCSVToDrive(mergedData) {
     console.log("Syncing with Google Drive...");
 
-    // Authenticate using the Service Account Key file
     const auth = new google.auth.GoogleAuth({
         keyFile: config.gsheets_key_path,
         scopes: ['https://www.googleapis.com/auth/drive'],
@@ -108,6 +108,7 @@ async function writeCSVToDrive(mergedData) {
 
     let fileContent = "";
     let fileId = null;
+    const headerRow = "sep=,\ndate,Weight,Fat Free Mass,Fat Ratio,Fat Mass Weight,Heart Pulse,Muscle Mass,Hydration,Bone Mass,Vascular Age,ECG,Nerve Health Score\n";
 
     try {
         // 1. Search for existing file
@@ -121,28 +122,26 @@ async function writeCSVToDrive(mergedData) {
             fileId = listRes.data.files[0].id;
             const getRes = await drive.files.get({ fileId: fileId, alt: 'media' });
             fileContent = typeof getRes.data === 'string' ? getRes.data : JSON.stringify(getRes.data);
+            if (!fileContent) fileContent = headerRow; // Handle 0-byte existing files
         } else {
-            // New file header with added metrics
-            fileContent = "sep=,\n" + "date,Weight,Fat Free Mass,Fat Ratio,Fat Mass Weight,Heart Pulse,Muscle Mass,Hydration,Bone Mass,Vascular Age,ECG,Nerve Health Score\n";
+            fileContent = headerRow;
         }
 
         // 3. Prepare new rows (checking for duplicates)
-        const existingLines = fileContent ? fileContent.split("\n").map(line => line.split(',')) : [];
+        const existingLines = fileContent.split("\n").map(line => line.split(','));
         let newContent = "";
         
         for (var k = mergedData.length - 1; k >= 0; k--) {
             var matched = 0;
-            // Check if date matches existing rows
             for (var j = 0; j < existingLines.length; j++) {
-                if (existingLines[j] && mergedData[k]['date'] == existingLines[j][0]) {
+                // Safe check for existing lines
+                if (existingLines[j] && existingLines[j].length > 0 && mergedData[k]['date'] == existingLines[j][0]) {
                     matched = 1;
                     break;
                 }
             }
 
             if (matched == 0) {
-                // Create CSV line with all metrics
-                // Using "|| ''" ensures empty string if data is missing for that day
                 var oneLine = mergedData[k]["date"] + "," + 
                               (mergedData[k]["Weight"] || "") + "," + 
                               (mergedData[k]["Fat Free Mass"] || "") + "," + 
@@ -160,22 +159,25 @@ async function writeCSVToDrive(mergedData) {
         }
 
         // 4. Update or Create the file
-        if (newContent.length > 0) {
+        // FIX: We now write if there is new data OR if we need to create the file for the first time
+        if (newContent.length > 0 || !fileId) {
+            const finalBody = fileContent + newContent;
+            
             if (fileId) {
                 await drive.files.update({
                     fileId: fileId,
-                    media: { mimeType: 'text/csv', body: fileContent + newContent }
+                    media: { mimeType: 'text/csv', body: finalBody }
                 });
-                console.log("Updated Drive CSV with new data.");
+                console.log(`Updated Drive CSV with ${newContent.split('\n').length - 1} new rows.`);
             } else {
                 await drive.files.create({
                     resource: { name: config.driveFileName, parents: [config.driveFolderId] },
-                    media: { mimeType: 'text/csv', body: fileContent + newContent }
+                    media: { mimeType: 'text/csv', body: finalBody }
                 });
-                console.log("Created new CSV in Drive.");
+                console.log("Created new CSV file in Drive.");
             }
         } else {
-            console.log("No new data found.");
+            console.log("No new data to append.");
         }
 
     } catch (error) {
@@ -183,9 +185,8 @@ async function writeCSVToDrive(mergedData) {
     }
 }
 
-// Write metrics to SQLite and Google Drive CSV
 async function persistData(mergedData) {
-    console.log("Persisting data from Withings API");
+    console.log("Persisting data...");
 
     // SQLite Logic
     db.serialize(() => {
@@ -199,7 +200,7 @@ async function persistData(mergedData) {
             let formattedDate = d.getFullYear() + "-" + ("0" + month).slice(-2) + "-" + ("0" + d.getDate()).slice(-2) + " " + ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) + ":" + ("0" + d.getSeconds()).slice(-2);
             mergedData[i]["Formatted Date"] = formattedDate;
 
-            // Unit conversions (Weights to kg, etc)
+            // Unit conversions
             if (mergedData[i]["Weight"]) mergedData[i]["Weight"] = mergedData[i]["Weight"] / 1000;
             if (mergedData[i]["Fat Free Mass"]) mergedData[i]["Fat Free Mass"] = mergedData[i]["Fat Free Mass"] / 1000;
             if (mergedData[i]["Fat Ratio"]) mergedData[i]["Fat Ratio"] = mergedData[i]["Fat Ratio"] / 1000;
@@ -207,9 +208,9 @@ async function persistData(mergedData) {
             if (mergedData[i]["Muscle Mass"]) mergedData[i]["Muscle Mass"] = mergedData[i]["Muscle Mass"] / 100;
             if (mergedData[i]["Hydration"]) mergedData[i]["Hydration"] = mergedData[i]["Hydration"] / 100;
             if (mergedData[i]["Bone Mass"]) mergedData[i]["Bone Mass"] = mergedData[i]["Bone Mass"] / 100;
-            if (mergedData[i]["Vascular Age"]) mergedData[i]["Vascular Age"] = mergedData[i]["Vascular Age"] / 1000; // PWV is usually m/s * 1000 in raw
+            if (mergedData[i]["Vascular Age"]) mergedData[i]["Vascular Age"] = mergedData[i]["Vascular Age"] / 1000; 
 
-            // Simple insert (ignoring new metrics for SQLite to avoid schema migration issues for now)
+            // SQLite Insert
             db.run(`INSERT OR IGNORE INTO measurements(date, FormattedDate, Weight, FatFreeMass, FatRatio, FatMassWeight, HeartPulse, MuscleMass, Hydration, BoneMass, PulseWaveVelocity)
               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, 
               mergedData[i].date, mergedData[i]["Formatted Date"], mergedData[i]["Weight"], mergedData[i]["Fat Free Mass"], mergedData[i]["Fat Ratio"], 
@@ -221,7 +222,6 @@ async function persistData(mergedData) {
     await db.close((err) => {
         if (err) console.error(err.message);
     });
-    console.log("SQLite updated");
 
     // Format dates for CSV
     for (var k = 0; k < mergedData.length; k++) {
@@ -231,21 +231,19 @@ async function persistData(mergedData) {
         mergedData[k].date = outputDate;
     }
 
-    // Write to Google Drive CSV (Modified)
+    // Write to Google Drive CSV
     await writeCSVToDrive(mergedData);
-
-    console.log("All done");
 }
 
-// Retrieve all the latest metrics from the Withings API
 async function getWithingsData(accessToken, refreshToken, currentTime) {
     var bodyFormData = new FormData();
     bodyFormData.append('action', 'getmeas');
-    bodyFormData.append('meastypes', config.metricList);
+    // FIX: Changed 'meastypes' to 'meastype' (singular) as per API standards
+    bodyFormData.append('meastype', config.metricList); 
     bodyFormData.append('startdate', getPreviousTimestamp() + 1);
     bodyFormData.append('enddate', currentTime);
 
-    console.log("Getting data from Withings API");
+    console.log("Requesting data from Withings API...");
     try {
         const response = await axios.post("https://wbsapi.withings.net/measure", bodyFormData, {
             headers: {
@@ -254,13 +252,15 @@ async function getWithingsData(accessToken, refreshToken, currentTime) {
             }
         })
 
-        if (response.data.status != 401) {
+        if (response.data.status == 0) { // Check for Success Status 0
             var mergedData = await processData(response.data.body);
             await persistData(mergedData);
             await storeTime(currentTime);
-        } else {
-            console.log("Problem with tokens. Getting Replacement Access Token.");
+        } else if (response.data.status == 401) {
+            console.log("Token expired. Getting Replacement Access Token.");
             await getReplacementAccessToken(refreshToken);
+        } else {
+            console.log("API Error. Status:", response.data.status, "Message:", JSON.stringify(response.data));
         }
     } catch (error) {
         console.log("Error getting data: ", error);
