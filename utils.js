@@ -8,7 +8,7 @@ function getPreviousTimestamp() {
     try {
         let timestamp = fs.readFileSync(config.timestamp_path);
         return JSON.parse(timestamp);
-    } catch (err) { return 1577836800; }
+    } catch (err) { return 1577836800; } 
 }
 
 async function getReplacementAccessToken(refreshToken) {
@@ -38,24 +38,17 @@ function storeTime(latestTimestamp) {
 
 async function getWithingsData(accessToken, refreshToken, currentTime) {
     const startdate = getPreviousTimestamp();
-    const enddate = currentTime;
-
     var bodyFormData = new FormData();
     bodyFormData.append('action', 'getmeas');
     bodyFormData.append('access_token', accessToken);
     bodyFormData.append('startdate', startdate);
-    bodyFormData.append('enddate', enddate);
+    bodyFormData.append('enddate', currentTime);
     
-    if (config.metricList) {
-        bodyFormData.append('meastypes', config.metricList);
-    }
-
     try {
-        console.log(`Fetching data from ${new Date(startdate * 1000).toISOString()} to ${new Date(enddate * 1000).toISOString()}...`);
+        console.log("Syncing all data points...");
         const response = await axios.post("https://wbsapi.withings.net/measure", bodyFormData, { headers: { ...bodyFormData.getHeaders() } });
         
         if (response.data.status === 401) {
-            console.log("Access Token Expired. Refreshing...");
             let newAccessToken = await getReplacementAccessToken(refreshToken);
             if (newAccessToken) return await getWithingsData(newAccessToken, refreshToken, currentTime);
             return null;
@@ -63,34 +56,29 @@ async function getWithingsData(accessToken, refreshToken, currentTime) {
         
         if (response.data.status === 0) {
             let mergedData = await processData(response.data.body);
-            console.log(`Processed ${mergedData.length} entries.`);
+            console.log(`Successfully processed ${mergedData.length} unique dates.`);
             await persistData(mergedData);
             await storeTime(currentTime);
             return response.data.body;
-        } else {
-            console.log("API Error Status:", response.data.status);
-            return null;
         }
-    } catch (error) { console.log("Error getting Withings data:", error.message); return null; }
+    } catch (error) { console.log("Fetch Error:", error.message); return null; }
 }
 
 async function processData(scaleData) {
-    let simplifiedData = [];
+    let dataByDate = new Map();
     let unknownIDs = new Set();
 
     if (scaleData && scaleData.measuregrps) {
         scaleData.measuregrps.forEach(grp => {
+            let dateKey = grp.date;
+            if (!dataByDate.has(dateKey)) dataByDate.set(dateKey, { date: dateKey });
+            let entry = dataByDate.get(dateKey);
+
             grp.measures.forEach(measure => {
-                let singleEntry = { date: grp.date };
-                let metricName = config.metrics[measure.type];
                 let val = measure.value * Math.pow(10, measure.unit);
+                let metricName = config.metrics[measure.type];
                 
                 if (metricName) {
-                    // Body Fat Correction (+3%)
-                    if (metricName === "Body Fat (%)") {
-                        val = val + 3;
-                    }
-
                     // AFib Interpretation
                     if (metricName === "AFib Status") {
                         if ([2, 4].includes(val)) val = "AFib Detected";
@@ -98,46 +86,54 @@ async function processData(scaleData) {
                         else val = "Inconclusive";
                     }
 
-                    singleEntry[metricName] = val;
+                    // Body Fat Correction (+3%)
+                    if (metricName === "Body Fat (%)") {
+                        val = val + 3;
+                    }
+
+                    entry[metricName] = val;
 
                     // BMI Calculation
                     if (metricName === "Weight (kg)" && config.height) {
-                        singleEntry["BMI"] = val / (config.height * config.height);
+                        entry["BMI"] = val / (config.height * config.height);
                     }
-                    
-                    simplifiedData.push(singleEntry);
                 } else {
-                    unknownIDs.add(`${measure.type} (Value: ${val})`);
+                    unknownIDs.add(`${measure.type} (Raw: ${val})`);
                 }
             });
         });
     }
 
     if (unknownIDs.size > 0) {
-        console.log("--- DEBUG: Unknown IDs Found (Possible Visceral Fat IDs) ---");
-        unknownIDs.forEach(id => console.log(`ID: ${id}`));
-        console.log("-----------------------------------------------------------");
+        console.log("Found unmapped metrics (Discovery):", Array.from(unknownIDs).join(", "));
     }
 
-    var mergedMap = simplifiedData.filter(function (v) {
-        return this[v.date] ? !Object.assign(this[v.date], v) : (this[v.date] = v);
-    }, {});
-    
-    let result = Object.values(mergedMap);
-    result.sort((a, b) => b.date - a.date);
-    return result;
+    return Array.from(dataByDate.values()).sort((a, b) => b.date - a.date);
 }
 
 function formatRow(item) {
     let d = new Date(item.date * 1000);
-    let formattedDate = d.toISOString().replace('T', ' ').substring(0, 19);
+    let dateStr = d.toISOString().replace('T', ' ').substring(0, 19);
     
-    let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
-    let bf = typeof item["Body Fat (%)"] === 'number' ? item["Body Fat (%)"].toFixed(2) : (item["Body Fat (%)"] || "");
-    let visceral = item["Visceral Fat Rating"] || "";
-    let pwv = typeof item["Pulse Wave Velocity (m/s)"] === 'number' ? item["Pulse Wave Velocity (m/s)"].toFixed(2) : (item["Pulse Wave Velocity (m/s)"] || "");
-    
-    return `${formattedDate},${item["Weight (kg)"]||""},${bmi},${bf},${visceral},${pwv},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}`;
+    // Safely format values, allowing 0 to be recorded as "0" instead of blank
+    const getVal = (key, decimals = null) => {
+        let val = item[key];
+        if (val === undefined || val === null) return "";
+        if (typeof val === 'number' && decimals !== null) return val.toFixed(decimals);
+        return val;
+    };
+
+    return [
+        dateStr,
+        getVal("Weight (kg)", 2),
+        getVal("BMI", 1),
+        getVal("Body Fat (%)", 2),
+        getVal("Visceral Fat Rating", 1),
+        getVal("Pulse Wave Velocity (m/s)", 2),
+        getVal("AFib Status"),
+        getVal("Vascular Age (years)", 1),
+        getVal("Nerve Health Score", 1)
+    ].join(",");
 }
 
 async function writeCSVToDrive(mergedData) {
@@ -157,8 +153,7 @@ async function writeCSVToDrive(mergedData) {
         let allRowsMap = new Map();
         if (fileContent && typeof fileContent === 'string') {
             fileContent.split(/\r?\n/).filter(l => l.trim() && !l.startsWith("date,")).forEach(line => {
-                let dateStr = line.split(',')[0];
-                if (dateStr) allRowsMap.set(dateStr, line);
+                allRowsMap.set(line.split(',')[0], line);
             });
         }
 
@@ -179,14 +174,6 @@ async function writeCSVToDrive(mergedData) {
 async function persistData(mergedData) {
     if (mergedData.length === 0) return;
     if (!fs.existsSync(config.csv_output_path)) fs.writeFileSync(config.csv_output_path, "date,Weight (kg),BMI,Body Fat (%),Visceral Fat Rating,Pulse Wave Velocity (m/s),AFib Status,Vascular Age (years),Nerve Health Score\n");
-    
-    let existingDates = new Set(fs.readFileSync(config.csv_output_path, 'utf8').split('\n').map(l => l.split(',')[0]));
-    let newLines = mergedData.map(item => formatRow(item)).filter(row => !existingDates.has(row.split(',')[0])).join("\n");
-    
-    if (newLines.length > 0) {
-        fs.appendFileSync(config.csv_output_path, "\n" + newLines);
-        console.log("Appended to local CSV.");
-    }
     await writeCSVToDrive(mergedData);
 }
 
