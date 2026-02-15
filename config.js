@@ -21,29 +21,24 @@ config.timestamp_path = config.output_dir + "withingsprevioustime.json";
 // This is the file you got from Google when you setup access to Drive. 
 config.gsheets_key_path = config.output_dir + "withings2gsheets-service-account.json";
 
-// Local paths (still used for temp storage or local runs)
+// Local paths
 config.csv_output_path = config.data_dir + "withings_data.csv";
 config.sqlite3_output_path = config.data_dir + "withings_data.sqlite3";
 
-// Updated Metrics Map
+// Updated Metrics Map: Corrected IDs and labels
 config.metrics = {
    "1": "Weight",
-   "5": "Fat Free Mass",
-   "6": "Fat Ratio",
-   "8": "Fat Mass Weight",
+   "6": "Body Fat %",
    "11": "Heart Pulse",
-   "76": "Muscle Mass",
-   "77": "Hydration",
-   "88": "Bone Mass",
-   "91": "Vascular Age",       
+   "91": "Pulse Wave Velocity (m/s)",       
    "130": "ECG",              
+   "155": "Vascular Age",
    "158": "Nerve Health Score"
 }
 
-// Updated list to include 91, 130, 158
-config.metricList = "1,5,6,8,11,76,77,88,91,130,158"
+// Updated list for the API request (only requested metrics)
+config.metricList = "1,6,11,91,130,155,158"
 
-// Columns by index
 config.metricsConor = {
    "Weight lbs": 7,
    "Weight": 8,
