@@ -17,8 +17,10 @@ config.gsheets_key_path = config.output_dir + "withings2gsheets-service-account.
 config.sqlite3_output_path = config.output_dir + "withings_data.db";
 config.csv_output_path = config.data_dir + "withings_data.csv";
 
+// User Height in Meters (185 cm)
 config.height = 1.85; 
 
+// Metric Type IDs for Withings Body Scan
 config.metrics = {
     "1": "Weight (kg)",
     "6": "Body Fat (%)",
