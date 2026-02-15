@@ -22,8 +22,10 @@ async function getReplacementAccessToken(refreshToken) {
         const response = await axios.post("https://wbsapi.withings.net/v2/oauth2", bodyFormData, { headers: { ...bodyFormData.getHeaders() } });
         if (response.data.body && response.data.body.access_token) {
             storeTokens(response.data.body.access_token, response.data.body.refresh_token);
+            return response.data.body.access_token;
         }
     } catch (error) { console.log("Token Refresh Error:", error.message); }
+    return null;
 }
 
 function storeTokens(accessToken, refreshToken) {
@@ -34,9 +36,43 @@ function storeTime(latestTimestamp) {
     try { fs.writeFileSync(config.timestamp_path, JSON.stringify(latestTimestamp)); } catch (error) { console.log("Error storing timestamp", error) }
 }
 
+// RESTORED: This function was missing in the previous version
+async function getWithingsData(accessToken, lastUpdate) {
+    var bodyFormData = new FormData();
+    bodyFormData.append('action', 'getmeas');
+    bodyFormData.append('access_token', accessToken);
+    bodyFormData.append('lastupdate', lastUpdate);
+    // Requesting specific metrics defined in config
+    if (config.metricList) {
+        bodyFormData.append('meastypes', config.metricList);
+    }
+
+    try {
+        const response = await axios.post("https://wbsapi.withings.net/measure", bodyFormData, { headers: { ...bodyFormData.getHeaders() } });
+        
+        // Handle Invalid Token (401)
+        if (response.data.status === 401) {
+            console.log("Access Token Expired. Refreshing...");
+            let tokens = JSON.parse(fs.readFileSync(config.token_path));
+            let newAccessToken = await getReplacementAccessToken(tokens.refreshToken);
+            if (newAccessToken) {
+                return await getWithingsData(newAccessToken, lastUpdate);
+            } else {
+                throw new Error("Failed to refresh token.");
+            }
+        }
+        
+        return response.data.body;
+
+    } catch (error) {
+        console.log("Error getting Withings data:", error.message);
+        return null;
+    }
+}
+
 async function processData(scaleData) {
     let simplifiedData = [];
-    if (scaleData.measuregrps) {
+    if (scaleData && scaleData.measuregrps) {
         scaleData.measuregrps.forEach(grp => {
             grp.measures.forEach(measure => {
                 let singleEntry = { date: grp.date };
@@ -55,8 +91,8 @@ async function processData(scaleData) {
                     
                     simplifiedData.push(singleEntry);
                 } else {
-                    // Log unknown metrics to help identify missing IDs (like hidden Visceral Fat IDs)
-                    console.log(`[Info] Unmapped Metric Found: Type ${measure.type}, Value ${measure.value}`);
+                    // Log unknown metrics to help identify missing IDs
+                    // console.log(`[Info] Unmapped Metric Found: Type ${measure.type}, Value ${measure.value}`);
                 }
             });
         });
@@ -131,7 +167,6 @@ async function writeCSVToDrive(mergedData) {
     } catch (error) { console.log("Drive Error:", error.message); }
 }
 
-// Persist data locally (CSV) and to Google Drive
 async function persistData(mergedData) {
     if (mergedData.length === 0) return;
 
@@ -170,4 +205,4 @@ async function persistData(mergedData) {
     await writeCSVToDrive(mergedData);
 }
 
-module.exports = { getPreviousTimestamp, getReplacementAccessToken, storeTokens, storeTime, processData, persistData };
+module.exports = { getPreviousTimestamp, getReplacementAccessToken, storeTokens, storeTime, getWithingsData, processData, persistData };
