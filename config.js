@@ -14,21 +14,17 @@ config.token_path = config.output_dir + "withings2gsheetstokens.json";
 config.timestamp_path = config.output_dir + "withingsprevioustime.json";
 config.gsheets_key_path = config.output_dir + "withings2gsheets-service-account.json";
 
+// Removed Heart Rate (11)
 config.metrics = {
-   "1": "Weight",
-   "6": "Body Fat %",
-   "11": "Heart Pulse",
-   "91": "Pulse Wave Velocity (m/s)",       
-   "130": "ECG Result",
-   "135": "QRS Interval (ms)",
-   "136": "PR Interval (ms)",
-   "137": "QT Interval (ms)",
-   "138": "QTc Interval (ms)",
+   "1": "Weight (kg)",
+   "6": "Body Fat (%)",
+   "91": "PWV (m/s)",       
+   "130": "AFib Status",
    "155": "Vascular Age",
    "158": "Nerve Health Score"
 };
 
-// Expanded list to include ECG sub-metrics
-config.metricList = "1,6,11,91,130,135,136,137,138,155,158";
+// Removed 11 from request string
+config.metricList = "1,6,91,130,155,158";
 
 module.exports = config;
