@@ -56,7 +56,6 @@ async function getWithingsData(accessToken, refreshToken, currentTime) {
         
         if (response.data.status === 0) {
             let mergedData = await processData(response.data.body);
-            console.log(`Processed ${mergedData.length} unique records.`);
             await persistData(mergedData);
             await storeTime(currentTime);
             return response.data.body;
@@ -68,29 +67,27 @@ async function processData(scaleData) {
     let dataByDate = new Map();
 
     if (scaleData && scaleData.measuregrps) {
+        // Step 1: Group measures within a 60-second window to unify all Body Scan results
         scaleData.measuregrps.forEach(grp => {
-            let dateKey = grp.date;
-            if (!dataByDate.has(dateKey)) dataByDate.set(dateKey, { date: dateKey });
-            let entry = dataByDate.get(dateKey);
+            let timestamp = grp.date;
+            let existingTimestamp = Array.from(dataByDate.keys()).find(t => Math.abs(t - timestamp) <= 60);
+            let targetKey = existingTimestamp || timestamp;
+
+            if (!dataByDate.has(targetKey)) dataByDate.set(targetKey, { date: targetKey });
+            let entry = dataByDate.get(targetKey);
 
             grp.measures.forEach(measure => {
                 let val = measure.value * Math.pow(10, measure.unit);
                 let metricName = config.metrics[measure.type];
                 
                 if (metricName) {
-                    // 1. Body Fat Correction (+3%)
                     if (metricName === "Body Fat (%)") val = val + 3;
-
-                    // 2. AFib Interpretation
                     if (metricName === "AFib Status") {
                         if ([2, 4].includes(val)) val = "AFib Detected";
                         else if ([0, 1, 5, 10].includes(val)) val = "AFib Not Detected";
                         else val = "Inconclusive";
                     }
-
-                    entry[metricName] = val;
-
-                    // 3. BMI Calculation
+                    if (entry[metricName] === undefined) entry[metricName] = val;
                     if (metricName === "Weight (kg)" && config.height) {
                         entry["BMI"] = val / (config.height * config.height);
                     }
@@ -104,10 +101,9 @@ async function processData(scaleData) {
 function formatRow(item) {
     let d = new Date(item.date * 1000);
     let dateStr = d.toISOString().replace('T', ' ').substring(0, 19);
-    
     const getVal = (key, decimals = null) => {
         let val = item[key];
-        if (val === undefined || val === null) return "";
+        if (val === undefined || val === null || val === "") return "";
         if (typeof val === 'number' && decimals !== null) return val.toFixed(decimals);
         return val;
     };
@@ -123,6 +119,36 @@ function formatRow(item) {
         getVal("Vascular Age (years)", 1),
         getVal("Nerve Health Score", 1)
     ].join(",");
+}
+
+/**
+ * THE NUCLEAR PASS
+ * Checks every single generated row. If Column 2 (Weight) is empty or not a number, the row is deleted.
+ */
+function finalValidator(allRowsMap) {
+    let approvedRows = [];
+    let rejectedCount = 0;
+
+    // Convert keys (dates) to array and sort newest first
+    let sortedDates = Array.from(allRowsMap.keys()).sort((a, b) => new Date(b) - new Date(a));
+
+    sortedDates.forEach(dateKey => {
+        let row = allRowsMap.get(dateKey);
+        let columns = row.split(',');
+        let weightValue = columns[1] ? columns[1].trim() : "";
+
+        // If weight exists and is a number, keep it.
+        if (weightValue !== "" && !isNaN(parseFloat(weightValue))) {
+            approvedRows.push(row);
+        } else {
+            rejectedCount++;
+        }
+    });
+
+    if (rejectedCount > 0) {
+        console.log(`[Validation] Nuclear Scrub completed. Removed ${rejectedCount} rows missing weight data.`);
+    }
+    return approvedRows;
 }
 
 async function writeCSVToDrive(mergedData) {
@@ -157,23 +183,22 @@ async function writeCSVToDrive(mergedData) {
             allRowsMap.set(row.split(',')[0], row);
         });
 
-        // Reconstruct Master CSV
-        let sortedRows = Array.from(allRowsMap.keys()).sort((a, b) => new Date(b) - new Date(a)).map(d => allRowsMap.get(d));
-        let fullCSV = headerRow + "\n" + sortedRows.join("\n") + "\n";
+        // RUN THE NUCLEAR VALIDATOR
+        let scrubbedRows = finalValidator(allRowsMap);
 
-        console.log(`Sending ${sortedRows.length} rows to Google Drive...`);
+        let fullCSV = headerRow + "\n" + scrubbedRows.join("\n") + "\n";
 
         if (fileId) {
             await drive.files.update({ fileId, media: { mimeType: 'text/csv', body: fullCSV } });
+            console.log("Successfully updated Drive CSV (Post-Validation).");
         } else {
             await drive.files.create({ requestBody: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: fullCSV } });
+            console.log("Successfully created new Drive CSV.");
         }
-        console.log("Successfully updated Drive CSV.");
     } catch (error) { console.log("Drive Error:", error.message); }
 }
 
 async function persistData(mergedData) {
-    if (mergedData.length === 0) return;
     await writeCSVToDrive(mergedData);
 }
 
