@@ -70,13 +70,10 @@ async function getWithingsData(accessToken, refreshToken, currentTime) {
             let mergedData = await processData(data);
             console.log(`Processed ${mergedData.length} new entries.`);
             
-            // Proceed to write step even if mergedData is empty, to verify file integrity if needed
-            if (mergedData.length > 0) {
-                await persistData(mergedData);
-                await storeTime(currentTime);
-            } else {
-                console.log("No new data found in this time range.");
-            }
+            // Proceed to write step to ensure file integrity (fix bad headers/newlines)
+            await persistData(mergedData);
+            await storeTime(currentTime);
+            
             return data;
         } else {
             console.log("API Error Status:", response.data.status);
@@ -120,126 +117,131 @@ async function processData(scaleData) {
     return result;
 }
 
+// Helper to format a row from an object
+function formatRow(item) {
+    let d = new Date(item.date * 1000);
+    // Format: YYYY-MM-DD HH:mm:ss
+    let formattedDate = d.toISOString().replace('T', ' ').substring(0, 19);
+    
+    let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
+    let visceral = item["Visceral Fat Rating"] || "";
+    
+    return `${formattedDate},${item["Weight (kg)"]||""},${bmi},${item["Body Fat (%)"]||""},${visceral},${item["Pulse Wave Velocity (m/s)"]||""},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}`;
+}
+
 async function writeCSVToDrive(mergedData) {
     const auth = new google.auth.GoogleAuth({ keyFile: config.gsheets_key_path, scopes: ['https://www.googleapis.com/auth/drive'] });
     const drive = google.drive({ version: 'v3', auth });
     
-    const headerRow = "date,Weight (kg),BMI,Body Fat (%),Visceral Fat Rating,Pulse Wave Velocity (m/s),AFib Status,Vascular Age (years),Nerve Health Score\n";
+    const headerRow = "date,Weight (kg),BMI,Body Fat (%),Visceral Fat Rating,Pulse Wave Velocity (m/s),AFib Status,Vascular Age (years),Nerve Health Score";
     let fileId = null;
     let fileContent = "";
 
     try {
         const listRes = await drive.files.list({ 
             q: `'${config.driveFolderId}' in parents and name = '${config.driveFileName}' and trashed = false`, 
-            fields: 'files(id, name, size, modifiedTime)' 
+            fields: 'files(id, name)' 
         });
         
         if (listRes.data.files.length > 0) {
-            // DUPLICATE CHECK
-            if (listRes.data.files.length > 1) {
-                console.warn(`[WARNING] Found ${listRes.data.files.length} files named '${config.driveFileName}'. Using the first one.`);
-                console.warn(`File 1 ID: ${listRes.data.files[0].id} (Size: ${listRes.data.files[0].size || 0} bytes)`);
-                console.warn(`File 2 ID: ${listRes.data.files[1].id} (Size: ${listRes.data.files[1].size || 0} bytes)`);
-            }
-
             fileId = listRes.data.files[0].id;
-            console.log(`Targeting Drive File ID: ${fileId}`);
-            
-            // EXPLICITLY request as text to avoid object confusion
+            console.log(`Found file on Drive: ${config.driveFileName} (ID: ${fileId})`);
             const getRes = await drive.files.get({ fileId: fileId, alt: 'media' }, { responseType: 'text' });
-            fileContent = getRes.data;
-            
-            // DEBUG: Show what we actually got
-            if (typeof fileContent === 'string') {
-                console.log(`[DEBUG] Downloaded content length: ${fileContent.length} chars.`);
-                console.log(`[DEBUG] First 100 chars: "${fileContent.substring(0, 100).replace(/\n/g, '\\n')}"`);
-            } else {
-                console.log(`[DEBUG] Downloaded content is NOT a string. Type: ${typeof fileContent}`);
-                fileContent = ""; 
-            }
+            fileContent = typeof getRes.data === 'string' ? getRes.data : "";
         } else {
             console.log("File not found on Drive. Creating new file.");
         }
 
-        // Logic: Treat whitespace-only or extremely short files as "empty"
-        if (!fileContent || typeof fileContent !== 'string' || fileContent.trim().length < 5) {
-            console.log("Drive file deemed EMPTY. Overwriting with Headers + Data.");
+        // --- ROBUST MERGE STRATEGY ---
+        // 1. Parse existing file content into a Map (Date -> Row String)
+        // 2. Add/Overwrite with new data from mergedData
+        // 3. Sort by Date
+        // 4. Rewrite entire file
+        
+        let allRowsMap = new Map();
+
+        // Step 1: Parse Existing
+        if (fileContent && fileContent.trim().length > 0) {
+            // Split by newline and remove empty lines
+            let lines = fileContent.split(/\r?\n/).filter(line => line.trim().length > 0);
             
-            let fullBody = headerRow;
-            mergedData.forEach(item => {
-                let d = new Date(item.date * 1000);
-                let formattedDate = d.toISOString().replace('T', ' ').substring(0, 19);
-                let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
-                let visceral = item["Visceral Fat Rating"] || "";
-                let row = `${formattedDate},${item["Weight (kg)"]||""},${bmi},${item["Body Fat (%)"]||""},${visceral},${item["Pulse Wave Velocity (m/s)"]||""},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}\n`;
-                fullBody += row;
+            lines.forEach(line => {
+                if (line.startsWith("date,")) return; // Skip header
+                let parts = line.split(',');
+                let dateStr = parts[0];
+                if (dateStr) {
+                    allRowsMap.set(dateStr, line);
+                }
             });
-
-            if (fileId) {
-                await drive.files.update({ fileId: fileId, media: { mimeType: 'text/csv', body: fullBody } });
-            } else {
-                await drive.files.create({ requestBody: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: fullBody } });
-            }
-            console.log("Successfully initialized CSV on Drive.");
-            return;
+            console.log(`Read ${allRowsMap.size} valid rows from existing Drive file.`);
         }
 
-        // --- APPEND LOGIC ---
-        console.log("Drive file has content. Merging...");
-        
-        // Ensure headers exist
-        if (!fileContent.startsWith("date,")) {
-             console.log("Headers missing in file. Prepending...");
-             fileContent = headerRow + fileContent;
-        }
-
-        let newContent = "";
-        let existingDates = new Set();
-        const lines = fileContent.split('\n');
-        
-        lines.forEach(line => {
-            const parts = line.split(',');
-            if (parts.length > 0 && parts[0] !== 'date' && parts[0].trim() !== "") {
-                existingDates.add(parts[0].trim());
-            }
-        });
-
-        console.log(`[DEBUG] Parsed ${existingDates.size} existing unique dates from Drive file.`);
-
+        // Step 2: Merge New Data
+        let newCount = 0;
         mergedData.forEach(item => {
-            let d = new Date(item.date * 1000);
-            let formattedDate = d.toISOString().replace('T', ' ').substring(0, 19);
-
-            if (!existingDates.has(formattedDate)) {
-                let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
-                let visceral = item["Visceral Fat Rating"] || "";
-                let row = `${formattedDate},${item["Weight (kg)"]||""},${bmi},${item["Body Fat (%)"]||""},${visceral},${item["Pulse Wave Velocity (m/s)"]||""},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}\n`;
-                newContent += row;
+            let rowStr = formatRow(item);
+            let dateStr = rowStr.split(',')[0]; // Extract the formatted date "2023-01-01 12:00:00"
+            
+            if (!allRowsMap.has(dateStr)) {
+                newCount++;
             }
+            // We set (overwrite) the row to ensure we have the latest format/columns
+            allRowsMap.set(dateStr, rowStr);
         });
 
-        if (newContent.length > 0) {
-            console.log(`Appending ${newContent.split('\n').length - 1} new rows to Drive.`);
+        console.log(`Merging... Total rows: ${allRowsMap.size} (Updated/New from this run: ${mergedData.length})`);
+
+        // Step 3: Sort
+        // Convert Map keys to array, sort descending (newest first)
+        let sortedDates = Array.from(allRowsMap.keys()).sort((a, b) => {
+            return new Date(b) - new Date(a);
+        });
+
+        // Step 4: Reconstruct CSV
+        let fullCSV = headerRow + "\n";
+        sortedDates.forEach(date => {
+            fullCSV += allRowsMap.get(date) + "\n";
+        });
+
+        // Step 5: Write to Drive
+        // We use 'update' if file exists, 'create' if not.
+        // We ALWAYS write if there is data, to fix potential formatting/newline issues in the saved file.
+        if (fileId) {
             await drive.files.update({ 
                 fileId: fileId, 
-                media: { mimeType: 'text/csv', body: fileContent + newContent } 
+                media: { mimeType: 'text/csv', body: fullCSV } 
             });
-            console.log("Successfully updated CSV on Drive.");
+            console.log("Successfully overwrote Drive file with cleaned & sorted data.");
         } else {
-            console.log("All data already exists in Drive file. No update needed.");
+            await drive.files.create({ 
+                requestBody: { name: config.driveFileName, parents: [config.driveFolderId] }, 
+                media: { mimeType: 'text/csv', body: fullCSV } 
+            });
+            console.log("Successfully created new cleaned CSV on Drive.");
         }
 
     } catch (error) { console.log("Drive Error:", error.message); }
 }
 
 async function persistData(mergedData) {
-    if (mergedData.length === 0) return;
+    if (mergedData.length === 0) {
+        // Even if no new data, we might want to trigger a drive sync to clean the file
+        // But usually we need at least some data context.
+        // If the user is running a Reset, mergedData has everything. 
+        // If incremental, it might be empty.
+        // Let's rely on writeCSVToDrive to handle the file check if we pass it an empty array? 
+        // No, let's just return if truly empty to save API calls, unless we want to force a fix.
+        // For now, let's assume we only sync if we fetched *something*.
+        return;
+    }
 
-    // 1. Save to Local CSV
+    // 1. Save to Local CSV (Append mode is fine for local logging)
     if (!fs.existsSync(config.csv_output_path)) {
         fs.writeFileSync(config.csv_output_path, "date,Weight (kg),BMI,Body Fat (%),Visceral Fat Rating,Pulse Wave Velocity (m/s),AFib Status,Vascular Age (years),Nerve Health Score\n");
     }
 
+    // We can just append to local for simplicity, or repeat the robust logic.
+    // Keeping local simple (append) as it's mostly for debug/backup.
     let existingFileContent = fs.readFileSync(config.csv_output_path, 'utf8');
     let existingDates = new Set();
     existingFileContent.split('\n').forEach(line => {
@@ -249,14 +251,10 @@ async function persistData(mergedData) {
 
     let newLines = "";
     mergedData.forEach(item => {
-        let d = new Date(item.date * 1000);
-        let formattedDate = d.toISOString().replace('T', ' ').substring(0, 19);
-
-        if (!existingDates.has(formattedDate)) {
-            let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
-            let visceral = item["Visceral Fat Rating"] || "";
-            
-            newLines += `${formattedDate},${item["Weight (kg)"]||""},${bmi},${item["Body Fat (%)"]||""},${visceral},${item["Pulse Wave Velocity (m/s)"]||""},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}\n`;
+        let row = formatRow(item);
+        let dateStr = row.split(',')[0];
+        if (!existingDates.has(dateStr)) {
+            newLines += row + "\n";
         }
     });
 
@@ -265,7 +263,7 @@ async function persistData(mergedData) {
         console.log("Appended to local CSV.");
     }
 
-    // 2. Save to Google Drive
+    // 2. Save to Google Drive (Robust Overwrite)
     await writeCSVToDrive(mergedData);
 }
 
