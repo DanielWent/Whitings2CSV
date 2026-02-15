@@ -69,6 +69,8 @@ async function getWithingsData(accessToken, refreshToken, currentTime) {
             let data = response.data.body;
             let mergedData = await processData(data);
             console.log(`Processed ${mergedData.length} new entries.`);
+            
+            // ALWAYS try to persist if we have data OR if we need to fix the file headers
             if (mergedData.length > 0) {
                 await persistData(mergedData);
                 await storeTime(currentTime);
@@ -138,24 +140,44 @@ async function writeCSVToDrive(mergedData) {
             
             const getRes = await drive.files.get({ fileId: fileId, alt: 'media' });
             fileContent = getRes.data;
-            
-            // Ensure fileContent is a string
-            if (typeof fileContent !== 'string') {
-                fileContent = ""; 
-            }
+            if (typeof fileContent !== 'string') fileContent = ""; 
         } else {
-            console.log("File not found on Drive. A new one will be created.");
+            console.log("File not found on Drive. Creating new file.");
         }
 
-        // If file is empty or missing headers, force headers
-        if (!fileContent || !fileContent.startsWith("date,")) {
-            console.log("File is empty or missing headers. Prepending headers.");
-            fileContent = headerRow + (fileContent || "");
+        // === SIMPLIFIED LOGIC: If file is empty, FORCE write fresh CSV ===
+        if (!fileContent || fileContent.trim().length === 0) {
+            console.log("Drive file is empty. Writing HEADERS + DATA from scratch.");
+            
+            let fullBody = headerRow;
+            mergedData.forEach(item => {
+                let d = new Date(item.date * 1000);
+                let formattedDate = d.toISOString().replace('T', ' ').substring(0, 19);
+                let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
+                let visceral = item["Visceral Fat Rating"] || "";
+                let row = `${formattedDate},${item["Weight (kg)"]||""},${bmi},${item["Body Fat (%)"]||""},${visceral},${item["Pulse Wave Velocity (m/s)"]||""},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}\n`;
+                fullBody += row;
+            });
+
+            if (fileId) {
+                await drive.files.update({ fileId: fileId, media: { mimeType: 'text/csv', body: fullBody } });
+            } else {
+                await drive.files.create({ requestBody: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: fullBody } });
+            }
+            console.log("Successfully initialized CSV on Drive.");
+            return; // Exit function after force write
+        }
+
+        // === EXISTING APPEND LOGIC (Only runs if file had content) ===
+        console.log("Drive file has content. Checking for new rows...");
+        
+        // Ensure headers exist in the current file content, if not prepend them in memory
+        if (!fileContent.startsWith("date,")) {
+             fileContent = headerRow + fileContent;
         }
 
         let newContent = "";
         let existingDates = new Set();
-
         const lines = fileContent.split('\n');
         lines.forEach(line => {
             const parts = line.split(',');
@@ -164,6 +186,8 @@ async function writeCSVToDrive(mergedData) {
             }
         });
 
+        console.log(`Found ${existingDates.size} existing entries in Drive file.`);
+
         mergedData.forEach(item => {
             let d = new Date(item.date * 1000);
             let formattedDate = d.toISOString().replace('T', ' ').substring(0, 19);
@@ -171,35 +195,20 @@ async function writeCSVToDrive(mergedData) {
             if (!existingDates.has(formattedDate)) {
                 let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
                 let visceral = item["Visceral Fat Rating"] || "";
-                
                 let row = `${formattedDate},${item["Weight (kg)"]||""},${bmi},${item["Body Fat (%)"]||""},${visceral},${item["Pulse Wave Velocity (m/s)"]||""},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}\n`;
                 newContent += row;
             }
         });
 
         if (newContent.length > 0) {
-            console.log(`Preparing to write ${newContent.split('\n').length - 1} rows to Drive...`);
-            // Debug: Show first row being written
-            console.log(`Sample Row: ${newContent.split('\n')[0]}`);
-
-            if (fileId) {
-                // We write the FULL content (Old + New)
-                const fullBody = fileContent + newContent;
-                await drive.files.update({ 
-                    fileId: fileId, 
-                    media: { mimeType: 'text/csv', body: fullBody } 
-                });
-                console.log("Successfully updated existing CSV on Drive.");
-            } else {
-                const fullBody = headerRow + newContent;
-                await drive.files.create({ 
-                    requestBody: { name: config.driveFileName, parents: [config.driveFolderId] }, 
-                    media: { mimeType: 'text/csv', body: fullBody } 
-                });
-                console.log("Successfully created new CSV on Drive.");
-            }
+            console.log(`Appending ${newContent.split('\n').length - 1} new rows to Drive.`);
+            await drive.files.update({ 
+                fileId: fileId, 
+                media: { mimeType: 'text/csv', body: fileContent + newContent } 
+            });
+            console.log("Successfully updated CSV on Drive.");
         } else {
-            console.log("No new unique data to append to Drive file.");
+            console.log("All data already exists in Drive file. No update needed.");
         }
 
     } catch (error) { console.log("Drive Error:", error.message); }
@@ -228,7 +237,6 @@ async function persistData(mergedData) {
         if (!existingDates.has(formattedDate)) {
             let bmi = item["BMI"] ? item["BMI"].toFixed(1) : "";
             let visceral = item["Visceral Fat Rating"] || "";
-            
             newLines += `${formattedDate},${item["Weight (kg)"]||""},${bmi},${item["Body Fat (%)"]||""},${visceral},${item["Pulse Wave Velocity (m/s)"]||""},${item["AFib Status"]||""},${item["Vascular Age (years)"]||""},${item["Nerve Health Score"]||""}\n`;
         }
     });
