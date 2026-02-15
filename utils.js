@@ -1,5 +1,5 @@
 var config = require('./config');
-const { google } = require('googleapis'); // Added Google Drive API
+const { google } = require('googleapis');
 const FormData = require('form-data');
 const fs = require("fs");
 const axios = require('axios');
@@ -14,18 +14,13 @@ let db = new sqlite3.Database(config.sqlite3_output_path, (err) => {
     console.log('Connected to sqlite3.');
 });
 
-const { GoogleSpreadsheet } = require('google-spreadsheet');
-
 // Find out when the code was last run
 function getPreviousTimestamp() {
     try {
         timestamp = fs.readFileSync(config.timestamp_path);
     } catch (err) {
-        // console.log("No previous timestamp")
-        // If we haven't run before, return 0 (Jan 1 1970)
         return 0;
     }
-    // If timestamp exists, read it
     let previousTimestamp = JSON.parse(timestamp);
     return previousTimestamp;
 }
@@ -33,7 +28,6 @@ function getPreviousTimestamp() {
 // If access token is no longer working, then this is called.
 async function getReplacementAccessToken(refreshToken) {
     var bodyFormData = new FormData();
-
     bodyFormData.append('action', 'requesttoken');
     bodyFormData.append('grant_type', 'refresh_token');
     bodyFormData.append('client_id', config.withingsClientID);
@@ -42,9 +36,7 @@ async function getReplacementAccessToken(refreshToken) {
 
     try {
         const response = await axios.post("https://wbsapi.withings.net/v2/oauth2", bodyFormData, {
-            headers: {
-                ...bodyFormData.getHeaders()
-            }
+            headers: { ...bodyFormData.getHeaders() }
         })
         const accessToken = response.data.body.access_token;
         const refreshToken = response.data.body.refresh_token;
@@ -55,7 +47,6 @@ async function getReplacementAccessToken(refreshToken) {
             console.log("Error getting new Access and refresh tokens")
         }
     } catch (error) {
-        // handle error
         console.log("Error Replacing Tokens: ", error);
     }
 }
@@ -78,7 +69,7 @@ async function storeTime(latestTimestamp) {
     }
 }
 
-// Process the data returned by Withings API so it is easier to deal with. Dump unneeded data.
+// Process the data returned by Withings API so it is easier to deal with.
 async function processData(scaleData) {
     console.log("Processing data from Withings API");
 
@@ -88,8 +79,10 @@ async function processData(scaleData) {
             let singleEntry = {};
             singleEntry.date = scaleData.measuregrps[i].date;
             let metric = config.metrics[scaleData.measuregrps[i].measures[j].type];
-            singleEntry[metric] = scaleData.measuregrps[i].measures[j].value;
-            simplifiedData.push(singleEntry);
+            if(metric) {
+                singleEntry[metric] = scaleData.measuregrps[i].measures[j].value;
+                simplifiedData.push(singleEntry);
+            }
         }
     }
 
@@ -129,12 +122,11 @@ async function writeCSVToDrive(mergedData) {
             const getRes = await drive.files.get({ fileId: fileId, alt: 'media' });
             fileContent = typeof getRes.data === 'string' ? getRes.data : JSON.stringify(getRes.data);
         } else {
-            // New file header
-            fileContent = "sep=,\n" + "date, " + Object.values(config.metrics).join(",") + "\n";
+            // New file header with added metrics
+            fileContent = "sep=,\n" + "date,Weight,Fat Free Mass,Fat Ratio,Fat Mass Weight,Heart Pulse,Muscle Mass,Hydration,Bone Mass,Vascular Age,ECG,Nerve Health Score\n";
         }
 
         // 3. Prepare new rows (checking for duplicates)
-        // Ensure we handle potentially empty files or single headers correctly
         const existingLines = fileContent ? fileContent.split("\n").map(line => line.split(',')) : [];
         let newContent = "";
         
@@ -149,17 +141,20 @@ async function writeCSVToDrive(mergedData) {
             }
 
             if (matched == 0) {
-                // Create CSV line
+                // Create CSV line with all metrics
+                // Using "|| ''" ensures empty string if data is missing for that day
                 var oneLine = mergedData[k]["date"] + "," + 
-                              (mergedData[k]["Weight"] || " ") + "," + 
-                              (mergedData[k]["Fat Free Mass"] || " ") + "," + 
-                              (mergedData[k]["Fat Ratio"] || " ") + "," + 
-                              (mergedData[k]["Fat Mass Weight"] || " ") + "," + 
-                              (mergedData[k]["Heart Pulse"] || " ") + "," + 
-                              (mergedData[k]["Muscle Mass"] || " ") + "," + 
-                              (mergedData[k]["Hydration"] || " ") + "," + 
-                              (mergedData[k]["Bone Mass"] || " ") + "," + 
-                              (mergedData[k]["Pulse Wave Velocity"] || " ") + "\n";
+                              (mergedData[k]["Weight"] || "") + "," + 
+                              (mergedData[k]["Fat Free Mass"] || "") + "," + 
+                              (mergedData[k]["Fat Ratio"] || "") + "," + 
+                              (mergedData[k]["Fat Mass Weight"] || "") + "," + 
+                              (mergedData[k]["Heart Pulse"] || "") + "," + 
+                              (mergedData[k]["Muscle Mass"] || "") + "," + 
+                              (mergedData[k]["Hydration"] || "") + "," + 
+                              (mergedData[k]["Bone Mass"] || "") + "," + 
+                              (mergedData[k]["Vascular Age"] || "") + "," + 
+                              (mergedData[k]["ECG"] || "") + "," + 
+                              (mergedData[k]["Nerve Health Score"] || "") + "\n";
                 newContent += oneLine;
             }
         }
@@ -188,82 +183,14 @@ async function writeCSVToDrive(mergedData) {
     }
 }
 
-// Output the latest metrics to an Excel-compatible CSV file (Legacy local)
-async function writeCSV(mergedData) {
-    var allLines = [];
-    var dataLines = [];
-
-    try {
-        var allLines = fs.readFileSync(config.csv_output_path).toString().split("\n");
-        var dataLines = allLines.slice(2);
-    } catch (err) {
-        fs.appendFileSync(config.csv_output_path, "sep=,\n");
-        var headerLine = "date, " + Object.values(config.metrics).join(",") + "\n";
-        fs.appendFileSync(config.csv_output_path, headerLine);
-    }
-
-    var splitLines = [];
-    for (i in dataLines) {
-        splitLines.push(dataLines[i].split(','));
-    }
-
-    for (var k = mergedData.length - 1; k >= 0; k--) {
-        var matched = 0;
-        for (j in splitLines) {
-            if (mergedData[k]['date'] == splitLines[j][0]) {
-                matched = 1;
-            }
-        }
-        if (matched == 0) {
-            var oneLine = mergedData[k]["date"] + "," + mergedData[k]["Weight"] + "," + mergedData[k]["Fat Free Mass"] + "," + mergedData[k]["Fat Ratio"] + "," + mergedData[k]["Fat Mass Weight"] + "," + mergedData[k]["Heart Pulse"] + "," + mergedData[k]["Muscle Mass"] + "," + mergedData[k]["Hydration"] + "," + mergedData[k]["Bone Mass"] + "," + mergedData[k]["Pulse Wave Velocity"] + "\n";
-            fs.appendFileSync(config.csv_output_path, oneLine);
-        }
-    }
-    console.log("CSV updated");
-}
-
-// Output the latest metrics to a Google Sheet of your choosing
-async function writeGSheets(mergedData) {
-    console.log("Starting GSheets updates");
-    const doc = new GoogleSpreadsheet(config.gSheetsId);
-    await doc.useServiceAccountAuth(require(config.gsheets_key_path));
-    await doc.loadInfo(); 
-    const sheet = doc.sheetsById[config.gSheetsTabId];
-
-    let headerValues = Object.values(config.metrics);
-    headerValues.unshift("date");
-    await sheet.setHeaderRow(headerValues);
-
-    const rows = await sheet.getRows();
-
-    for (var i = mergedData.length - 1; i >= 0; i--) {
-        var matched = 0;
-        for (var j = 0; j < rows.length; j++) {
-            if (mergedData[i].date == rows[j].date) matched = 1;
-        }
-        if (matched != 1) {
-            var rowArray = [mergedData[i]];
-            console.log("Writing Row to GSheets:", mergedData[i].date);
-            const moreRows = await sheet.addRows(rowArray, { insert: true })
-        }
-        if (config.useConorsTabs == true) {
-            await conor.updateCurrentAnnualTab(mergedData[i], doc);
-        }
-    }
-    console.log("Finished GSheets updates");
-}
-
-// Write metrics to SQLite, CSV and Google Sheets
+// Write metrics to SQLite and Google Drive CSV
 async function persistData(mergedData) {
     console.log("Persisting data from Withings API");
 
-    // SQLite Logic (Kept as is)
+    // SQLite Logic
     db.serialize(() => {
         db.run('CREATE TABLE IF NOT EXISTS measurements( date INTEGER PRIMARY KEY, FormattedDate TEXT, Weight REAL, FatFreeMass REAL, FatRatio REAL, FatMassWeight REAL, HeartPulse INTEGER, MuscleMass REAL, Hydration REAL, BoneMass REAL, PulseWaveVelocity REAL, UNIQUE(date))', (err) => {
-            if (err) {
-                console.log(err);
-                throw err;
-            }
+            if (err) throw err;
         });
 
         for (var i = 0, len = mergedData.length; i < len; i++) {
@@ -272,33 +199,31 @@ async function persistData(mergedData) {
             let formattedDate = d.getFullYear() + "-" + ("0" + month).slice(-2) + "-" + ("0" + d.getDate()).slice(-2) + " " + ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) + ":" + ("0" + d.getSeconds()).slice(-2);
             mergedData[i]["Formatted Date"] = formattedDate;
 
-            if (mergedData[i]["Weight"] === undefined) { mergedData[i]["Weight"] = " "; } else { mergedData[i]["Weight"] = mergedData[i]["Weight"] / 1000; }
-            if (mergedData[i]["Fat Free Mass"] === undefined) { mergedData[i]["Fat Free Mass"] = " "; } else { mergedData[i]["Fat Free Mass"] = mergedData[i]["Fat Free Mass"] / 1000; }
-            if (mergedData[i]["Fat Ratio"] === undefined) { mergedData[i]["Fat Ratio"] = " "; } else { mergedData[i]["Fat Ratio"] = mergedData[i]["Fat Ratio"] / 1000; }
-            if (mergedData[i]["Fat Mass Weight"] === undefined) { mergedData[i]["Fat Mass Weight"] = " "; } else { mergedData[i]["Fat Mass Weight"] = mergedData[i]["Fat Mass Weight"] / 100; }
-            if (mergedData[i]["Heart Pulse"] === undefined) mergedData[i]["Heart Pulse"] = " ";
-            if (mergedData[i]["Muscle Mass"] === undefined) { mergedData[i]["Muscle Mass"] = " "; } else { mergedData[i]["Muscle Mass"] = mergedData[i]["Muscle Mass"] / 100; }
-            if (mergedData[i]["Hydration"] === undefined) { mergedData[i]["Hydration"] = " "; } else { mergedData[i]["Hydration"] = mergedData[i]["Hydration"] / 100; }
-            if (mergedData[i]["Bone Mass"] === undefined) { mergedData[i]["Bone Mass"] = " "; } else { mergedData[i]["Bone Mass"] = mergedData[i]["Bone Mass"] / 100; }
-            if (mergedData[i]["Pulse Wave Velocity"] === undefined) { mergedData[i]["Pulse Wave Velocity"] = " "; } else { mergedData[i]["Pulse Wave Velocity"] = mergedData[i]["Pulse Wave Velocity"] / 1000; }
+            // Unit conversions (Weights to kg, etc)
+            if (mergedData[i]["Weight"]) mergedData[i]["Weight"] = mergedData[i]["Weight"] / 1000;
+            if (mergedData[i]["Fat Free Mass"]) mergedData[i]["Fat Free Mass"] = mergedData[i]["Fat Free Mass"] / 1000;
+            if (mergedData[i]["Fat Ratio"]) mergedData[i]["Fat Ratio"] = mergedData[i]["Fat Ratio"] / 1000;
+            if (mergedData[i]["Fat Mass Weight"]) mergedData[i]["Fat Mass Weight"] = mergedData[i]["Fat Mass Weight"] / 100;
+            if (mergedData[i]["Muscle Mass"]) mergedData[i]["Muscle Mass"] = mergedData[i]["Muscle Mass"] / 100;
+            if (mergedData[i]["Hydration"]) mergedData[i]["Hydration"] = mergedData[i]["Hydration"] / 100;
+            if (mergedData[i]["Bone Mass"]) mergedData[i]["Bone Mass"] = mergedData[i]["Bone Mass"] / 100;
+            if (mergedData[i]["Vascular Age"]) mergedData[i]["Vascular Age"] = mergedData[i]["Vascular Age"] / 1000; // PWV is usually m/s * 1000 in raw
 
+            // Simple insert (ignoring new metrics for SQLite to avoid schema migration issues for now)
             db.run(`INSERT OR IGNORE INTO measurements(date, FormattedDate, Weight, FatFreeMass, FatRatio, FatMassWeight, HeartPulse, MuscleMass, Hydration, BoneMass, PulseWaveVelocity)
-              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, mergedData[i].date, mergedData[i]["Formatted Date"], mergedData[i]["Weight"], mergedData[i]["Fat Free Mass"], mergedData[i]["Fat Ratio"], mergedData[i]["Fat Mass Weight"], mergedData[i]["Heart Pulse"], mergedData[i]["Muscle Mass"], mergedData[i]["Hydration"], mergedData[i]["Bone Mass"], mergedData[i]["Pulse Wave Velocity"], (err) => {
-                if (err) {
-                    console.log(err);
-                    throw err;
-                }
-            });
+              VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, 
+              mergedData[i].date, mergedData[i]["Formatted Date"], mergedData[i]["Weight"], mergedData[i]["Fat Free Mass"], mergedData[i]["Fat Ratio"], 
+              mergedData[i]["Fat Mass Weight"], mergedData[i]["Heart Pulse"], mergedData[i]["Muscle Mass"], mergedData[i]["Hydration"], mergedData[i]["Bone Mass"], 
+              mergedData[i]["Vascular Age"], (err) => { if (err) throw err; });
         }
     });
 
     await db.close((err) => {
-        if (err) {
-            console.error(err.message);
-        }
+        if (err) console.error(err.message);
     });
     console.log("SQLite updated");
 
+    // Format dates for CSV
     for (var k = 0; k < mergedData.length; k++) {
         var d = new Date(mergedData[k].date * 1000);
         var month = d.getMonth() + 1;
@@ -306,11 +231,8 @@ async function persistData(mergedData) {
         mergedData[k].date = outputDate;
     }
 
-    // Write to Google Drive CSV (New)
+    // Write to Google Drive CSV (Modified)
     await writeCSVToDrive(mergedData);
-
-    // Write to GSheets (Original)
-    await writeGSheets(mergedData);
 
     console.log("All done");
 }
@@ -337,11 +259,11 @@ async function getWithingsData(accessToken, refreshToken, currentTime) {
             await persistData(mergedData);
             await storeTime(currentTime);
         } else {
-            console.log("Problem with tokens. Getting Replacement Access Token. Please re-run to get Withings data.");
+            console.log("Problem with tokens. Getting Replacement Access Token.");
             await getReplacementAccessToken(refreshToken);
         }
     } catch (error) {
-        console.log("Error Conor1: ", error);
+        console.log("Error getting data: ", error);
     }
 }
 
