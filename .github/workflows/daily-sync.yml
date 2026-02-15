@@ -3,7 +3,7 @@ name: Withings Daily Sync
 on:
   schedule:
     - cron: '0 8 * * *' # Runs every day at 8:00 AM UTC
-  workflow_dispatch: # Allows you to run it manually button click
+  workflow_dispatch: 
 
 permissions:
   contents: write
@@ -25,13 +25,15 @@ jobs:
       run: npm install
 
     - name: Create Service Account File
-      # Creates the credentials file from the Secret
       run: |
         mkdir -p .withings2gsheets
         echo '${{ secrets.GDRIVE_CREDS }}' > .withings2gsheets/withings2gsheets-service-account.json
 
     - name: Run Sync
-      # Ensure you have uploaded .withings2gsheets/withings2gsheetstokens.json to your repo!
+      # UPDATE: Pass the secrets as environment variables here
+      env:
+        WITHINGS_CLIENT_ID: ${{ secrets.WITHINGS_CLIENT_ID }}
+        WITHINGS_CLIENT_SECRET: ${{ secrets.WITHINGS_CLIENT_SECRET }}
       run: node index.js
 
     - name: Commit Updated Tokens
