@@ -35,33 +35,22 @@ function storeTime(latestTimestamp) {
 }
 
 async function processData(scaleData) {
-    console.log("--- START DATA DEBUGGER ---");
     let simplifiedData = [];
     if (scaleData.measuregrps) {
-        scaleData.measuregrps.forEach((grp, index) => {
-            // Log every ID found in this specific measurement group
-            const idsFound = grp.measures.map(m => m.type);
-            console.log(`Group ${index} [Date: ${grp.date}]: Found Metric IDs: ${idsFound.join(', ')}`);
-            
+        scaleData.measuregrps.forEach(grp => {
             grp.measures.forEach(measure => {
                 let singleEntry = { date: grp.date };
                 let metricName = config.metrics[measure.type];
                 
                 if (metricName) {
-                    // Apply power-of-10 scaling: value * 10^unit
+                    // Universal Power-of-10 Scaling
                     let val = measure.value * Math.pow(10, measure.unit);
                     singleEntry[metricName] = val;
                     simplifiedData.push(singleEntry);
-                    
-                    // Specific log for the "blank" metrics
-                    if ([130, 135, 136, 137, 138].includes(measure.type)) {
-                        console.log(` >> DEBUG ECG DATA: Type ${measure.type} (${metricName}) = Raw: ${measure.value}, Scaled: ${val}`);
-                    }
                 }
             });
         });
     }
-    console.log("--- END DATA DEBUGGER ---");
 
     var mergedMap = simplifiedData.filter(function (v) {
         return this[v.date] ? !Object.assign(this[v.date], v) : (this[v.date] = v);
@@ -76,7 +65,8 @@ async function writeCSVToDrive(mergedData) {
     const auth = new google.auth.GoogleAuth({ keyFile: config.gsheets_key_path, scopes: ['https://www.googleapis.com/auth/drive'] });
     const drive = google.drive({ version: 'v3', auth });
     
-    const headerRow = "date,Weight,Body Fat %,Heart Pulse,PWV (m/s),ECG Result,QRS (ms),PR (ms),QT (ms),QTc (ms),Vascular Age,Nerve Health\n";
+    // Updated Header Row (No Heart Rate)
+    const headerRow = "date,Weight (kg),Body Fat (%),PWV (m/s),AFib Status,Vascular Age,Nerve Health Score\n";
     let fileId = null;
     let fileContent = "";
 
@@ -95,7 +85,8 @@ async function writeCSVToDrive(mergedData) {
         let newRowsList = [];
         for (var k = 0; k < mergedData.length; k++) {
             if (!existingDates.includes(mergedData[k].date)) {
-                let row = `${mergedData[k].date},${mergedData[k]["Weight"]||""},${mergedData[k]["Body Fat %"]||""},${mergedData[k]["Heart Pulse"]||""},${mergedData[k]["PWV (m/s)"]||""},${mergedData[k]["ECG Result"]||""},${mergedData[k]["QRS (ms)"]||""},${mergedData[k]["PR (ms)"]||""},${mergedData[k]["QT (ms)"]||""},${mergedData[k]["QTc (ms)"]||""},${mergedData[k]["Vascular Age"]||""},${mergedData[k]["Nerve Health"]||""}`;
+                // Constructing row without Heart Rate
+                let row = `${mergedData[k].date},${mergedData[k]["Weight (kg)"]||""},${mergedData[k]["Body Fat (%)"]||""},${mergedData[k]["PWV (m/s)"]||""},${mergedData[k]["AFib Status"]||""},${mergedData[k]["Vascular Age"]||""},${mergedData[k]["Nerve Health Score"]||""}`;
                 newRowsList.push(row);
             }
         }
@@ -104,39 +95,45 @@ async function writeCSVToDrive(mergedData) {
             const updatedBody = headerRow + newRowsList.join('\n') + '\n' + dataLinesOnly.join('\n');
             if (fileId) await drive.files.update({ fileId, media: { mimeType: 'text/csv', body: updatedBody } });
             else await drive.files.create({ resource: { name: config.driveFileName, parents: [config.driveFolderId] }, media: { mimeType: 'text/csv', body: updatedBody } });
+            console.log(`Success: Added ${newRowsList.length} records (No HR column).`);
+        } else {
+            console.log("No new data to write.");
         }
     } catch (e) { console.log("Drive Sync Error:", e.message); }
 }
 
 async function persistData(mergedData) {
     for (var i = 0; i < mergedData.length; i++) {
-        if (mergedData[i]["Weight"]) mergedData[i]["Weight"] = mergedData[i]["Weight"].toFixed(2);
+        // Formatting
+        if (mergedData[i]["Weight (kg)"]) mergedData[i]["Weight (kg)"] = mergedData[i]["Weight (kg)"].toFixed(2);
         
-        if (mergedData[i]["Body Fat %"]) {
-            let bf = mergedData[i]["Body Fat %"] + 4;
-            mergedData[i]["Body Fat %"] = bf.toFixed(2);
+        if (mergedData[i]["Body Fat (%)"]) {
+            // +4% offset
+            let bf = parseFloat(mergedData[i]["Body Fat (%)"]) + 4;
+            mergedData[i]["Body Fat (%)"] = bf.toFixed(2);
         }
         
         if (mergedData[i]["PWV (m/s)"]) mergedData[i]["PWV (m/s)"] = mergedData[i]["PWV (m/s)"].toFixed(2);
-        if (mergedData[i]["Nerve Health"]) mergedData[i]["Nerve Health"] = mergedData[i]["Nerve Health"].toFixed(1);
+        if (mergedData[i]["Nerve Health Score"]) mergedData[i]["Nerve Health Score"] = mergedData[i]["Nerve Health Score"].toFixed(1);
         if (mergedData[i]["Vascular Age"]) mergedData[i]["Vascular Age"] = mergedData[i]["Vascular Age"].toFixed(1);
 
-        // ECG Result Mapping
-        if (mergedData[i]["ECG Result"] !== undefined) {
-            const res = mergedData[i]["ECG Result"];
-            if ([0, 1, 5, 10].includes(res)) mergedData[i]["ECG Result"] = "Normal (High HR)";
-            else if ([2, 4].includes(res)) mergedData[i]["ECG Result"] = "AFib Detected";
-            else if (res === 9) mergedData[i]["ECG Result"] = "Inconclusive (HR Low)";
-            else mergedData[i]["ECG Result"] = `Normal (${res})`;
-        }
-
-        // Millisecond intervals
-        ["QRS (ms)", "PR (ms)", "QT (ms)", "QTc (ms)"].forEach(key => {
-            if (mergedData[i][key]) {
-                 if (mergedData[i][key] < 2) mergedData[i][key] = (mergedData[i][key] * 1000).toFixed(0);
-                 else mergedData[i][key] = mergedData[i][key].toFixed(0);
+        // Strict AFib Logic
+        if (mergedData[i]["AFib Status"] !== undefined) {
+            const res = mergedData[i]["AFib Status"];
+            
+            // 2, 4 = Detected
+            if ([2, 4].includes(res)) {
+                mergedData[i]["AFib Status"] = "AFib Detected";
+            } 
+            // 0, 1, 5, 10 = Not Detected (including High HR)
+            else if ([0, 1, 5, 10].includes(res)) {
+                mergedData[i]["AFib Status"] = "AFib Not Detected";
+            } 
+            // Everything else = Inconclusive
+            else {
+                mergedData[i]["AFib Status"] = "Inconclusive";
             }
-        });
+        }
 
         let d = new Date(mergedData[i].date * 1000);
         let month = d.getMonth() + 1;
