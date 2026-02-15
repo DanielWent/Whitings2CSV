@@ -1,16 +1,12 @@
 const express = require('express');
 const app = express();
-const config = require('./config'); // FIXED: Removed /utils/
-const utils = require('./utils');    // FIXED: Removed /utils/
+const config = require('./config');
+const utils = require('./utils');
 const fs = require('fs');
-const path = require('path');
-
-const port = 5005;
 
 async function doEverything() {
     console.log("Starting Withings Sync Process...");
     
-    // Ensure data directory exists
     if (!fs.existsSync(config.output_dir)) {
         fs.mkdirSync(config.output_dir, { recursive: true });
     }
@@ -19,13 +15,13 @@ async function doEverything() {
         const tokens = JSON.parse(fs.readFileSync(config.token_path));
         const currentTime = Math.floor(Date.now() / 1000);
         
+        // This will now call the updated function in utils.js
         await utils.getWithingsData(tokens.accessToken, tokens.refreshToken, currentTime);
     } else {
         console.log("No tokens found. Please run Manual Token Setup first.");
     }
 }
 
-// Start the orchestrator
 doEverything().then(() => {
     console.log("Process finished. Shutting down.");
     process.exit(0);
