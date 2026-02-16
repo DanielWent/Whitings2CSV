@@ -1,1 +1,5 @@
-.withings2gsheets/
+node_modules/
+.env
+.DS_Store
+# Ignore the sensitive credentials file
+.withings2gsheets/withings2gsheets-service-account.json
