@@ -83,20 +83,18 @@ async function processData(scaleData) {
                 if (metricName) {
                     if (metricName === "Body Fat (%)") val = val + 3;
                     
-                    // UPDATED LOGIC: Code 5 now says "Poor Recording"
+                    // UPDATED LOGIC: 
+                    // 10, 9, 5 get clear text descriptions (no brackets).
+                    // Everything else gets "Unclassified" + the numeric code in brackets.
                     if (metricName === "AFib Status") {
                         if (val === 10) {
-                            val = `Sinus Rhythm (${val})`;
+                            val = "Sinus Rhythm";
                         } else if (val === 9) {
-                            val = `High Heart Rate - No Signs of AFib (${val})`;
+                            val = "High Heart Rate - No Signs of AFib";
                         } else if (val === 5) {
-                            val = `Poor Recording (${val})`;
-                        } else if ([2, 4].includes(val)) {
-                            val = `AFib Detected (${val})`;
-                        } else if ([0, 1].includes(val)) {
-                            val = `AFib Not Detected (${val})`;
+                            val = "Poor Recording";
                         } else {
-                            val = `Unknown Status (${val})`;
+                            val = `Unclassified (${val})`;
                         }
                     }
 
