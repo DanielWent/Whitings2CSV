@@ -83,15 +83,14 @@ async function processData(scaleData) {
                 if (metricName) {
                     if (metricName === "Body Fat (%)") val = val + 3;
                     
-                    // UPDATED LOGIC: Reveal the number for inconclusive results
+                    // UPDATED LOGIC: Always show the numeric code in parentheses
                     if (metricName === "AFib Status") {
                         if ([2, 4].includes(val)) {
-                            val = "AFib Detected";
+                            val = `AFib Detected (${val})`;
                         } else if ([0, 1, 5, 10].includes(val)) {
-                            val = "AFib Not Detected";
+                            val = `AFib Not Detected (${val})`;
                         } else {
-                            // This will now print "Inconclusive (3)" or similar so we can fix it later
-                            val = `Inconclusive (${val})`; 
+                            val = `Inconclusive (${val})`;
                         }
                     }
 
