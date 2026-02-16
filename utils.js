@@ -83,14 +83,20 @@ async function processData(scaleData) {
                 if (metricName) {
                     if (metricName === "Body Fat (%)") val = val + 3;
                     
-                    // UPDATED LOGIC: Always show the numeric code in parentheses
+                    // UPDATED LOGIC: Code 5 now says "Poor Recording"
                     if (metricName === "AFib Status") {
-                        if ([2, 4].includes(val)) {
+                        if (val === 10) {
+                            val = `Sinus Rhythm (${val})`;
+                        } else if (val === 9) {
+                            val = `High Heart Rate - No Signs of AFib (${val})`;
+                        } else if (val === 5) {
+                            val = `Poor Recording (${val})`;
+                        } else if ([2, 4].includes(val)) {
                             val = `AFib Detected (${val})`;
-                        } else if ([0, 1, 5, 10].includes(val)) {
+                        } else if ([0, 1].includes(val)) {
                             val = `AFib Not Detected (${val})`;
                         } else {
-                            val = `Inconclusive (${val})`;
+                            val = `Unknown Status (${val})`;
                         }
                     }
 
