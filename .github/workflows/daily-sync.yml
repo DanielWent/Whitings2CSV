@@ -49,6 +49,7 @@ jobs:
       run: |
         git config --global user.name 'GitHub Actions'
         git config --global user.email 'actions@github.com'
-        git add .withings2gsheets/
+        # THE FIX: Only add the specific history files, NEVER the folder or key
+        git add .withings2gsheets/withingsprevioustime.json .withings2gsheets/withings2gsheetstokens.json
         git commit -m "Auto-update Withings state [skip ci]" || exit 0
         git push
