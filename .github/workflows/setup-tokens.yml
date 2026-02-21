@@ -9,7 +9,7 @@ on:
       redirect_uri:
         description: 'Your Dashboard Callback URL (e.g., http://localhost:8080)'
         required: true
-        default: 'http://localhost:8080'
+        default: 'http://localhost:5005/get_token'
 
 permissions:
   contents: write
