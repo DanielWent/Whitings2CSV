@@ -12,13 +12,12 @@ function getPreviousTimestamp(user) {
         let timestamp = fs.readFileSync(user.timestamp_path);
         return JSON.parse(timestamp);
     } catch (err) {
-        // Default to a past date if no file exists (e.g., Jan 1 2020)
         return 1577836800; 
     } 
 }
 
 /**
- * Refreshes the OAuth token for a specific user using their specific refresh token.
+ * Refreshes the OAuth token for a specific user.
  */
 async function getReplacementAccessToken(refreshToken, user) {
     var bodyFormData = new FormData();
@@ -43,9 +42,6 @@ async function getReplacementAccessToken(refreshToken, user) {
     return null;
 }
 
-/**
- * Saves the new tokens to the user's specific token file.
- */
 function storeTokens(accessToken, refreshToken, user) {
     try { 
         fs.writeFileSync(user.token_path, JSON.stringify({ accessToken, refreshToken })); 
@@ -54,9 +50,6 @@ function storeTokens(accessToken, refreshToken, user) {
     }
 }
 
-/**
- * Saves the latest sync time to the user's specific timestamp file.
- */
 function storeTime(latestTimestamp, user) {
     try { 
         fs.writeFileSync(user.timestamp_path, JSON.stringify(latestTimestamp)); 
@@ -65,10 +58,6 @@ function storeTime(latestTimestamp, user) {
     }
 }
 
-/**
- * Main function to fetch data from Withings API.
- * Recursively calls itself if token refresh is needed.
- */
 async function getWithingsData(accessToken, refreshToken, currentTime, user) {
     const startdate = getPreviousTimestamp(user);
     var bodyFormData = new FormData();
@@ -93,10 +82,7 @@ async function getWithingsData(accessToken, refreshToken, currentTime, user) {
         }
         
         if (response.data.status === 0) {
-            // Success. Process data with user-specific logic.
             let mergedData = await processData(response.data.body, user);
-            
-            // Persist data and update timestamp
             await persistData(mergedData, user);
             await storeTime(currentTime, user);
             return response.data.body;
@@ -109,17 +95,12 @@ async function getWithingsData(accessToken, refreshToken, currentTime, user) {
     }
 }
 
-/**
- * Processes raw Withings data into a clean structure.
- * Applies logic adjustments (e.g., +3% body fat for 'drw').
- */
 async function processData(scaleData, user) {
     let dataByDate = new Map();
 
     if (scaleData && scaleData.measuregrps) {
         scaleData.measuregrps.forEach(grp => {
             let timestamp = grp.date;
-            // Group measurements occurring within 60 seconds of each other
             let existingTimestamp = Array.from(dataByDate.keys()).find(t => Math.abs(t - timestamp) <= 60);
             let targetKey = existingTimestamp || timestamp;
 
@@ -131,24 +112,16 @@ async function processData(scaleData, user) {
                 let metricName = config.metrics[measure.type];
                 
                 if (metricName) {
-                    // --- USER SPECIFIC LOGIC START ---
-                    // Only apply +3% adjustment if metric is Body Fat AND user is 'drw'
                     if (metricName === "Body Fat (%)" && user.id === 'drw') {
                         val = val + 3;
                     }
-                    // --- USER SPECIFIC LOGIC END ---
-                    
                     if (metricName === "AFib Status") {
                         if (val === 9) val = "Sinus Rhythm (No Signs of AFib)";
                         else if (val === 10) val = "High Heart Rate (No Signs of AFib)";
                         else if (val === 5) val = "Poor Recording";
                         else val = `Unclassified (${val})`;
                     }
-
-                    // Store value if not already present
                     if (entry[metricName] === undefined) entry[metricName] = val;
-
-                    // Calculate BMI using the specific user's height
                     if (metricName === "Weight (kg)" && user.height) {
                         entry["BMI"] = val / (user.height * user.height);
                     }
@@ -156,24 +129,18 @@ async function processData(scaleData, user) {
             });
         });
     }
-    // Sort by date descending (newest first)
     return Array.from(dataByDate.values()).sort((a, b) => b.date - a.date);
 }
 
-/**
- * Formats a single data object into a CSV row string.
- */
 function formatRow(item) {
     let d = new Date(item.date * 1000);
     let dateStr = d.toISOString().replace('T', ' ').substring(0, 19);
-    
     const getVal = (key, decimals = null) => {
         let val = item[key];
         if (val === undefined || val === null || val === "") return "";
         if (typeof val === 'number' && decimals !== null) return val.toFixed(decimals);
         return val;
     };
-
     return [
         dateStr,
         getVal("Weight (kg)", 2),
@@ -187,39 +154,20 @@ function formatRow(item) {
     ].join(",");
 }
 
-/**
- * Validates rows to ensure no empty/junk data remains.
- */
 function finalValidator(allRowsMap) {
     let approvedRows = [];
-    let rejectedCount = 0;
-
-    // Sort all dates descending
     let sortedDates = Array.from(allRowsMap.keys()).sort((a, b) => new Date(b) - new Date(a));
-
     sortedDates.forEach(dateKey => {
         let row = allRowsMap.get(dateKey);
         let columns = row.split(',');
         let weightValue = columns[1] ? columns[1].trim() : "";
-
-        // Row must have a valid weight to be kept
         if (weightValue !== "" && !isNaN(parseFloat(weightValue))) {
             approvedRows.push(row);
-        } else {
-            rejectedCount++;
         }
     });
-
-    if (rejectedCount > 0) {
-        console.log(`[Validation] Nuclear Scrub completed. Removed ${rejectedCount} rows.`);
-    }
     return approvedRows;
 }
 
-/**
- * Merges new data with existing CSV data from Google Drive and updates the file.
- * Uses user.driveFileName to target the correct file.
- */
 async function writeCSVToDrive(mergedData, user) {
     const auth = new google.auth.GoogleAuth({ 
         keyFile: config.gsheets_key_path, 
@@ -231,42 +179,33 @@ async function writeCSVToDrive(mergedData, user) {
     let fileId = null, fileContent = "";
 
     try {
-        // Search for the specific user's file in Drive
+        // Use user.driveFolderId instead of global config
         const listRes = await drive.files.list({ 
-            q: `'${config.driveFolderId}' in parents and name = '${user.driveFileName}' and trashed = false` 
+            q: `'${user.driveFolderId}' in parents and name = '${user.driveFileName}' and trashed = false` 
         });
 
         if (listRes.data.files.length > 0) {
             fileId = listRes.data.files[0].id;
             const getRes = await drive.files.get({ fileId: fileId, alt: 'media' }, { responseType: 'text' });
             fileContent = getRes.data;
-        } else {
-            console.log(`File '${user.driveFileName}' not found. Creating new one.`);
         }
 
         let allRowsMap = new Map();
-        
-        // Parse existing file content
         if (fileContent && typeof fileContent === 'string') {
             fileContent.split(/\r?\n/).forEach(line => {
                 let trimmed = line.trim();
-                // Skip header and empty lines
                 if (trimmed && !trimmed.startsWith("date,")) {
                     allRowsMap.set(trimmed.split(',')[0], trimmed);
                 }
             });
         }
 
-        // Merge new data (overwriting existing dates if overlap)
         mergedData.forEach(item => {
             let row = formatRow(item);
             allRowsMap.set(row.split(',')[0], row);
         });
 
-        // Clean up data
         let scrubbedRows = finalValidator(allRowsMap);
-
-        // Construct final CSV
         let fullCSV = headerRow + "\n" + scrubbedRows.join("\n") + "\n";
 
         if (fileId) {
@@ -277,7 +216,7 @@ async function writeCSVToDrive(mergedData, user) {
             console.log(`[${user.id}] Successfully updated Drive CSV: ${user.driveFileName}`);
         } else {
             await drive.files.create({ 
-                requestBody: { name: user.driveFileName, parents: [config.driveFolderId] }, 
+                requestBody: { name: user.driveFileName, parents: [user.driveFolderId] }, 
                 media: { mimeType: 'text/csv', body: fullCSV } 
             });
             console.log(`[${user.id}] Successfully created new Drive CSV: ${user.driveFileName}`);
