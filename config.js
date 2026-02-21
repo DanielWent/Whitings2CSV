@@ -6,21 +6,35 @@ config.withingsClientSecret = process.env.WITHINGS_CLIENT_SECRET;
 config.withingsState = "random_string_here";
 
 config.driveFolderId = "1rcyfE_q64FVBQce_FDmAseuayfDs_RzL"; 
-config.driveFileName = "withings_data.csv";
 
 config.data_dir = "./"; 
 config.output_dir = config.data_dir + ".withings2gsheets/";
-config.token_path = config.output_dir + "withings2gsheetstokens.json";
-config.timestamp_path = config.output_dir + "withingsprevioustime.json";
 
+// Common settings
 config.gsheets_key_path = config.output_dir + "withings2gsheets-service-account.json";
-config.sqlite3_output_path = config.output_dir + "withings_data.db";
-config.csv_output_path = config.data_dir + "withings_data.csv";
 
-// User Height in Meters (185 cm)
-config.height = 1.85; 
+// Define Users
+config.users = [
+    {
+        id: "drw", // Daniel
+        height: 1.85,
+        token_path: config.output_dir + "drw_tokens.json",
+        timestamp_path: config.output_dir + "drw_last_sync.json",
+        driveFileName: "drw_whitings_scale_data.csv",
+        // Metric Type IDs for Withings Body Scan
+        metricList: "1,6,91,130,155,158,170" 
+    },
+    {
+        id: "aflw", // April
+        height: 1.65, // Adjust height as necessary
+        token_path: config.output_dir + "aflw_tokens.json",
+        timestamp_path: config.output_dir + "aflw_last_sync.json",
+        driveFileName: "aflw_whitings_scale_data.csv",
+        // Assuming same metrics, but can be changed per user
+        metricList: "1,6,91,130,155,158,170"
+    }
+];
 
-// Metric Type IDs for Withings Body Scan
 config.metrics = {
     "1": "Weight (kg)",
     "6": "Body Fat (%)",
@@ -30,7 +44,5 @@ config.metrics = {
     "158": "Nerve Health Score",
     "170": "Visceral Fat Rating" 
 };
-
-config.metricList = "1,6,91,130,155,158,170";
 
 module.exports = config;
