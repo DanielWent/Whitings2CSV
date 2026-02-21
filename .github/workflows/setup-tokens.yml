@@ -1,4 +1,4 @@
-name: Manual Token Setup
+name: Manual Token Setup (April)
 
 on:
   workflow_dispatch:
@@ -37,13 +37,17 @@ jobs:
             const querystring = require("querystring");
             const fs = require("fs");
 
+            // --- IMPORTANT: Ensure this matches your Withings Dashboard exactly ---
+            // If your dashboard says "http://localhost:5000/get_token", change 8080 to 5000 below.
+            const REDIRECT_URI = "http://localhost:8080"; 
+
             const postData = querystring.stringify({
               action: "requesttoken",
               grant_type: "authorization_code",
               client_id: process.env.WITHINGS_CLIENT_ID,
               client_secret: process.env.WITHINGS_CLIENT_SECRET,
               code: process.env.AUTH_CODE,
-              redirect_uri: "http://localhost:5005/get_token"
+              redirect_uri: REDIRECT_URI
             });
 
             const options = {
@@ -66,8 +70,9 @@ jobs:
                     accessToken: response.body.access_token,
                     refreshToken: response.body.refresh_token
                   };
-                  fs.writeFileSync(".withings2gsheets/withings2gsheetstokens.json", JSON.stringify(tokens));
-                  console.log("SUCCESS: Tokens retrieved and saved.");
+                  // SAVE TO AFLW (APRIL) FILE
+                  fs.writeFileSync(".withings2gsheets/aflw_tokens.json", JSON.stringify(tokens));
+                  console.log("SUCCESS: Tokens retrieved and saved to aflw_tokens.json");
                 } else {
                   console.error("FAILURE: Could not retrieve tokens.", response);
                   process.exit(1);
@@ -88,6 +93,7 @@ jobs:
         run: |
           git config --global user.name 'GitHub Actions'
           git config --global user.email 'actions@github.com'
-          git add .withings2gsheets/withings2gsheetstokens.json
-          git commit -m "Initialize Withings Tokens [skip ci]"
+          # Add the NEW file to git
+          git add .withings2gsheets/aflw_tokens.json
+          git commit -m "Add April's Withings Tokens [skip ci]"
           git push
