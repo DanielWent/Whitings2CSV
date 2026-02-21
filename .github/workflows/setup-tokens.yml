@@ -7,9 +7,9 @@ on:
         description: 'Paste the "code" from the browser URL here'
         required: true
       redirect_uri:
-        description: 'Your Dashboard Callback URL (e.g., http://localhost:8080)'
+        description: 'Your Dashboard Callback URL'
         required: true
-        default: 'http://localhost:5005/get_token'
+        default: 'http://localhost:5005/get_token' # Updated port
 
 permissions:
   contents: write
@@ -69,7 +69,6 @@ jobs:
                     accessToken: response.body.access_token,
                     refreshToken: response.body.refresh_token
                   };
-                  // Saves to April/User 2 file
                   fs.writeFileSync(".withings2gsheets/aflw_tokens.json", JSON.stringify(tokens));
                   console.log("SUCCESS: Tokens retrieved and saved to aflw_tokens.json");
                 } else {
