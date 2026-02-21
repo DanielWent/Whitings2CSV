@@ -101,7 +101,8 @@ async function processData(scaleData, user) {
     if (scaleData && scaleData.measuregrps) {
         scaleData.measuregrps.forEach(grp => {
             let timestamp = grp.date;
-            let existingTimestamp = Array.from(dataByDate.keys()).find(t => Math.abs(t - timestamp) <= 60);
+            // Group measurements occurring within 1 hour (3600 seconds) of each other
+            let existingTimestamp = Array.from(dataByDate.keys()).find(t => Math.abs(t - timestamp) <= 3600);
             let targetKey = existingTimestamp || timestamp;
 
             if (!dataByDate.has(targetKey)) dataByDate.set(targetKey, { date: targetKey });
@@ -179,7 +180,6 @@ async function writeCSVToDrive(mergedData, user) {
     let fileId = null, fileContent = "";
 
     try {
-        // Use user.driveFolderId instead of global config
         const listRes = await drive.files.list({ 
             q: `'${user.driveFolderId}' in parents and name = '${user.driveFileName}' and trashed = false` 
         });
