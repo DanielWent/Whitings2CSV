@@ -21,7 +21,7 @@ config.users = [
         height: 1.85,
         token_path: config.output_dir + "drw_tokens.json",
         timestamp_path: config.output_dir + "drw_last_sync.json",
-        // UPDATED FILENAME:
+        // DATA FILENAME FOR DANIEL
         driveFileName: "drw_withings_bodyscan_data.csv",
         metricList: "1,6,91,130,155,158,170" 
     },
@@ -30,7 +30,7 @@ config.users = [
         height: 1.65, 
         token_path: config.output_dir + "aflw_tokens.json",
         timestamp_path: config.output_dir + "aflw_last_sync.json",
-        // UPDATED FILENAME:
+        // DATA FILENAME FOR APRIL
         driveFileName: "aflw_withings_bodyscan_data.csv",
         metricList: "1,6,91,130,155,158,170"
     }
