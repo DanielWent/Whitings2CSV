@@ -1,9 +1,20 @@
-// ... existing config code ...
+var config = {};
+config.metrics = {};
 
-// Define Users with specific folder IDs
+config.withingsClientID = process.env.WITHINGS_CLIENT_ID;
+config.withingsClientSecret = process.env.WITHINGS_CLIENT_SECRET;
+config.withingsState = "random_string_here";
+
+config.data_dir = "./"; 
+config.output_dir = config.data_dir + ".withings2gsheets/";
+
+// Common settings
+config.gsheets_key_path = config.output_dir + "withings2gsheets-service-account.json";
+
+// Define Users
 config.users = [
     {
-        id: "drw",
+        id: "drw", // Daniel
         height: 1.85,
         token_path: config.output_dir + "drw_tokens.json",
         timestamp_path: config.output_dir + "drw_last_sync.json",
@@ -12,7 +23,7 @@ config.users = [
         metricList: "1,6,91,130,155,158,170" 
     },
     {
-        id: "aflw",
+        id: "aflw", // April
         height: 1.65, 
         token_path: config.output_dir + "aflw_tokens.json",
         timestamp_path: config.output_dir + "aflw_last_sync.json",
@@ -22,4 +33,15 @@ config.users = [
     }
 ];
 
-// ... rest of file ...
+// Map Withings Metric Type IDs to readable names
+config.metrics = {
+    "1": "Weight (kg)",
+    "6": "Body Fat (%)",
+    "91": "Pulse Wave Velocity (m/s)",
+    "130": "AFib Status",
+    "155": "Vascular Age (years)",
+    "158": "Nerve Health Score",
+    "170": "Visceral Fat Rating" 
+};
+
+module.exports = config;
