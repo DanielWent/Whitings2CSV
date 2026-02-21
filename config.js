@@ -5,6 +5,7 @@ config.withingsClientID = process.env.WITHINGS_CLIENT_ID;
 config.withingsClientSecret = process.env.WITHINGS_CLIENT_SECRET;
 config.withingsState = "random_string_here";
 
+// The Google Drive folder ID where CSVs will be stored
 config.driveFolderId = "1rcyfE_q64FVBQce_FDmAseuayfDs_RzL"; 
 
 config.data_dir = "./"; 
@@ -20,21 +21,22 @@ config.users = [
         height: 1.85,
         token_path: config.output_dir + "drw_tokens.json",
         timestamp_path: config.output_dir + "drw_last_sync.json",
-        driveFileName: "drw_whitings_scale_data.csv",
-        // Metric Type IDs for Withings Body Scan
+        // UPDATED FILENAME:
+        driveFileName: "drw_withings_bodyscan_data.csv",
         metricList: "1,6,91,130,155,158,170" 
     },
     {
         id: "aflw", // April
-        height: 1.65, // Adjust height as necessary
+        height: 1.65, 
         token_path: config.output_dir + "aflw_tokens.json",
         timestamp_path: config.output_dir + "aflw_last_sync.json",
-        driveFileName: "aflw_whitings_scale_data.csv",
-        // Assuming same metrics, but can be changed per user
+        // UPDATED FILENAME:
+        driveFileName: "aflw_withings_bodyscan_data.csv",
         metricList: "1,6,91,130,155,158,170"
     }
 ];
 
+// Map Withings Metric Type IDs to readable names
 config.metrics = {
     "1": "Weight (kg)",
     "6": "Body Fat (%)",
