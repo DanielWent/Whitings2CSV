@@ -11,19 +11,24 @@ async function doEverything() {
         fs.mkdirSync(config.output_dir, { recursive: true });
     }
 
-    if (fs.existsSync(config.token_path)) {
-        const tokens = JSON.parse(fs.readFileSync(config.token_path));
-        const currentTime = Math.floor(Date.now() / 1000);
+    // Loop through each user defined in config.js
+    for (const user of config.users) {
+        console.log(`\n--- Processing User: ${user.id} ---`);
         
-        // This will now call the updated function in utils.js
-        await utils.getWithingsData(tokens.accessToken, tokens.refreshToken, currentTime);
-    } else {
-        console.log("No tokens found. Please run Manual Token Setup first.");
+        if (fs.existsSync(user.token_path)) {
+            const tokens = JSON.parse(fs.readFileSync(user.token_path));
+            const currentTime = Math.floor(Date.now() / 1000);
+            
+            // Pass the specific 'user' object to the utils function
+            await utils.getWithingsData(tokens.accessToken, tokens.refreshToken, currentTime, user);
+        } else {
+            console.log(`No tokens found for ${user.id} at ${user.token_path}.`);
+        }
     }
 }
 
 doEverything().then(() => {
-    console.log("Process finished. Shutting down.");
+    console.log("\nAll users processed. Shutting down.");
     process.exit(0);
 }).catch(err => {
     console.error("Fatal Error:", err);
