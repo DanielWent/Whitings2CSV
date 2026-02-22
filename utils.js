@@ -59,7 +59,13 @@ function storeTime(latestTimestamp, user) {
 }
 
 async function getWithingsData(accessToken, refreshToken, currentTime, user) {
-    const startdate = getPreviousTimestamp(user);
+    // CHANGE START: 5-day Lookback Buffer
+    // We subtract 5 days (5 * 24 * 60 * 60 = 432000 seconds) from the last sync time.
+    // This allows the script to pick up measurements that were added manually 
+    // or arrived late due to API latency in the last 5 days.
+    const startdate = getPreviousTimestamp(user) - 432000;
+    // CHANGE END
+
     var bodyFormData = new FormData();
     bodyFormData.append('action', 'getmeas');
     bodyFormData.append('access_token', accessToken);
@@ -240,4 +246,3 @@ module.exports = {
     processData, 
     persistData 
 };
-
