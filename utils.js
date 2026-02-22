@@ -120,6 +120,7 @@ async function processData(scaleData, user) {
                         if (val === 9) val = "Sinus Rhythm (No Signs of AFib)";
                         else if (val === 10) val = "High Heart Rate (No Signs of AFib)";
                         else if (val === 5) val = "Poor Recording";
+                        else if (val === 2) val = "Inconclusive";    
                         else val = `Unclassified (${val})`;
                     }
                     if (entry[metricName] === undefined) entry[metricName] = val;
@@ -239,3 +240,4 @@ module.exports = {
     processData, 
     persistData 
 };
+
