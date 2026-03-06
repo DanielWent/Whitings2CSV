@@ -12,7 +12,7 @@ function getPreviousTimestamp(user) {
         let timestamp = fs.readFileSync(user.timestamp_path);
         return JSON.parse(timestamp);
     } catch (err) {
-        return 1577836800; 
+        return 1262304000; 
     } 
 }
 
@@ -246,3 +246,4 @@ module.exports = {
     processData, 
     persistData 
 };
+
