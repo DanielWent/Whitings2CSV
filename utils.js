@@ -12,7 +12,9 @@ function getPreviousTimestamp(user) {
         let timestamp = fs.readFileSync(user.timestamp_path);
         return JSON.parse(timestamp);
     } catch (err) {
-        return 1262304000; 
+        // Changed to 0 (Jan 1, 1970) to ensure all historical data is fetched 
+        // if the sync timestamp files are deleted.
+        return 0; 
     } 
 }
 
@@ -59,42 +61,72 @@ function storeTime(latestTimestamp, user) {
 }
 
 async function getWithingsData(accessToken, refreshToken, currentTime, user) {
-    // CHANGE START: 5-day Lookback Buffer
-    // We subtract 5 days (5 * 24 * 60 * 60 = 432000 seconds) from the last sync time.
-    // This allows the script to pick up measurements that were added manually 
-    // or arrived late due to API latency in the last 5 days.
-    const startdate = getPreviousTimestamp(user) - 432000;
-    // CHANGE END
-
-    var bodyFormData = new FormData();
-    bodyFormData.append('action', 'getmeas');
-    bodyFormData.append('access_token', accessToken);
-    bodyFormData.append('startdate', startdate);
-    bodyFormData.append('enddate', currentTime);
+    // We subtract 5 days (432000 seconds) from the last sync time to pick up delayed entries
+    const startdate = Math.max(0, getPreviousTimestamp(user) - 432000);
     
+    let allMeasureGrps = [];
+    let hasMore = true;
+    let currentOffset = 0;
+
     try {
         console.log(`Fetching metrics for ${user.id}...`);
-        const response = await axios.post("https://wbsapi.withings.net/measure", bodyFormData, { 
-            headers: { ...bodyFormData.getHeaders() } 
-        });
-        
-        if (response.data.status === 401) {
-            console.log(`[${user.id}] Token expired. Refreshing...`);
-            let newAccessToken = await getReplacementAccessToken(refreshToken, user);
-            if (newAccessToken) {
-                return await getWithingsData(newAccessToken, refreshToken, currentTime, user);
+
+        while (hasMore) {
+            var bodyFormData = new FormData();
+            bodyFormData.append('action', 'getmeas');
+            bodyFormData.append('access_token', accessToken);
+            bodyFormData.append('startdate', startdate);
+            bodyFormData.append('enddate', currentTime);
+            
+            // Append the offset if we are pulling a subsequent page of data
+            if (currentOffset !== 0) {
+                bodyFormData.append('offset', currentOffset);
             }
-            return null;
+            
+            const response = await axios.post("https://wbsapi.withings.net/measure", bodyFormData, { 
+                headers: { ...bodyFormData.getHeaders() } 
+            });
+            
+            if (response.data.status === 401) {
+                console.log(`[${user.id}] Token expired. Refreshing...`);
+                let newAccessToken = await getReplacementAccessToken(refreshToken, user);
+                if (newAccessToken) {
+                    return await getWithingsData(newAccessToken, refreshToken, currentTime, user);
+                }
+                return null;
+            }
+            
+            if (response.data.status === 0) {
+                // Combine the new batch of measurements with our running total
+                if (response.data.body.measuregrps) {
+                    allMeasureGrps = allMeasureGrps.concat(response.data.body.measuregrps);
+                }
+                
+                // Check if the API is telling us there is more data waiting
+                if (response.data.body.more && response.data.body.offset) {
+                    currentOffset = response.data.body.offset;
+                } else {
+                    hasMore = false;
+                }
+            } else {
+                console.log(`[${user.id}] API Status Error: ${response.data.status}`);
+                hasMore = false;
+            }
         }
-        
-        if (response.data.status === 0) {
-            let mergedData = await processData(response.data.body, user);
+
+        // Once the loop is finished, process and save the fully merged dataset
+        if (allMeasureGrps.length > 0) {
+            let combinedBody = { measuregrps: allMeasureGrps };
+            let mergedData = await processData(combinedBody, user);
             await persistData(mergedData, user);
             await storeTime(currentTime, user);
-            return response.data.body;
+            return combinedBody;
         } else {
-            console.log(`[${user.id}] API Status Error: ${response.data.status}`);
+            console.log(`[${user.id}] No new measurements found.`);
+            await storeTime(currentTime, user);
+            return null;
         }
+
     } catch (error) { 
         console.log(`[${user.id}] API Error:`, error.message); 
         return null; 
@@ -246,4 +278,3 @@ module.exports = {
     processData, 
     persistData 
 };
-
