@@ -7,7 +7,7 @@ on:
     # Weekends: 8:30 AM UK time (07:30 UTC in BST, 08:30 UTC in GMT)
     - cron: '30 7,8 * * 0,6'
     # Everyday: 12:00 PM, 5:00 PM, 7:00 PM UK time (covers both GMT and BST offsets)
-    - cron: '0 11,12,16,17,18,19 * * *'
+    - cron: '0 11,12 * * *'
   
   workflow_dispatch:
     inputs:
