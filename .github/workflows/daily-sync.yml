@@ -1,4 +1,4 @@
-name: Daily Garmin Sync
+name: Daily Withings Sync
 
 on:
   schedule:
