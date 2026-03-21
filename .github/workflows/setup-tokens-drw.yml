@@ -1,0 +1,96 @@
+name: Manual Token Setup (Daniel)
+
+on:
+  workflow_dispatch:
+    inputs:
+      auth_code:
+        description: 'Paste the "code" from the browser URL here'
+        required: true
+      redirect_uri:
+        description: 'Your Dashboard Callback URL'
+        required: true
+        default: 'http://localhost:5005/get_token' # Updated port
+
+permissions:
+  contents: write
+
+jobs:
+  exchange-token:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+
+      - name: Exchange Code for Token
+        env:
+          WITHINGS_CLIENT_ID: ${{ secrets.WITHINGS_CLIENT_ID }}
+          WITHINGS_CLIENT_SECRET: ${{ secrets.WITHINGS_CLIENT_SECRET }}
+          AUTH_CODE: ${{ github.event.inputs.auth_code }}
+          REDIRECT_URI: ${{ github.event.inputs.redirect_uri }}
+        run: |
+          mkdir -p .withings2gsheets
+          
+          node -e '
+            const https = require("https");
+            const querystring = require("querystring");
+            const fs = require("fs");
+
+            const postData = querystring.stringify({
+              action: "requesttoken",
+              grant_type: "authorization_code",
+              client_id: process.env.WITHINGS_CLIENT_ID,
+              client_secret: process.env.WITHINGS_CLIENT_SECRET,
+              code: process.env.AUTH_CODE,
+              redirect_uri: process.env.REDIRECT_URI
+            });
+
+            const options = {
+              hostname: "wbsapi.withings.net",
+              path: "/v2/oauth2",
+              method: "POST",
+              headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Length": postData.length
+              }
+            };
+
+            const req = https.request(options, (res) => {
+              let data = "";
+              res.on("data", (chunk) => { data += chunk; });
+              res.on("end", () => {
+                const response = JSON.parse(data);
+                if (response.body && response.body.access_token) {
+                  const tokens = {
+                    accessToken: response.body.access_token,
+                    refreshToken: response.body.refresh_token
+                  };
+                  fs.writeFileSync(".withings2gsheets/drw_tokens.json", JSON.stringify(tokens));
+                  console.log("SUCCESS: Tokens retrieved and saved to aflw_tokens.json");
+                } else {
+                  console.error("FAILURE: Could not retrieve tokens.", response);
+                  process.exit(1);
+                }
+              });
+            });
+
+            req.on("error", (e) => {
+              console.error(e);
+              process.exit(1);
+            });
+
+            req.write(postData);
+            req.end();
+          '
+
+      - name: Commit Token File
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+          git add .withings2gsheets/aflw_tokens.json
+          git commit -m "Add April's Withings Tokens [skip ci]"
+          git push
