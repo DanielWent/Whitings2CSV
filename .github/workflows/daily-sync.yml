@@ -2,8 +2,11 @@ name: Daily Garmin Sync
 
 on:
   schedule:
+    # Weekdays: 7:15 AM UK time (06:15 UTC in BST, 07:15 UTC in GMT)
     - cron: '15 6,7 * * 1-5'
+    # Weekends: 8:30 AM UK time (07:30 UTC in BST, 08:30 UTC in GMT)
     - cron: '30 7,8 * * 0,6'
+    # Everyday: 12:00 PM, 5:00 PM, 7:00 PM UK time (covers both GMT and BST offsets)
     - cron: '0 11,12,16,17,18,19 * * *'
   
   workflow_dispatch:
@@ -39,16 +42,19 @@ jobs:
     - name: Daylight Saving Time Filter
       id: dst-filter
       run: |
+        # Only run this check for scheduled cron jobs, allowing manual dispatches to run anytime
         if [ "${{ github.event_name }}" == "schedule" ]; then
           UK_HOUR=$(TZ='Europe/London' date +%H)
-          UK_DAY=$(TZ='Europe/London' date +%u) 
+          UK_DAY=$(TZ='Europe/London' date +%u) # 1-7, where 1 is Monday
           
           SHOULD_RUN=false
           
+          # Weekdays (Monday to Friday)
           if [[ "$UK_DAY" -le 5 ]]; then
             if [[ "$UK_HOUR" == "07" || "$UK_HOUR" == "12" || "$UK_HOUR" == "17" || "$UK_HOUR" == "19" ]]; then
               SHOULD_RUN=true
             fi
+          # Weekends (Saturday and Sunday)
           else
             if [[ "$UK_HOUR" == "08" || "$UK_HOUR" == "12" || "$UK_HOUR" == "17" || "$UK_HOUR" == "19" ]]; then
               SHOULD_RUN=true
@@ -63,7 +69,6 @@ jobs:
         fi
         echo "should_run=true" >> $GITHUB_OUTPUT
 
-    # --- YOUR STANDARD REPO CHECKOUT AND RUN STEPS GO HERE ---
     - name: Checkout repository
       uses: actions/checkout@v4
       
@@ -76,12 +81,21 @@ jobs:
       run: npm install
       
     - name: Run Sync
+      env:
+        WITHINGS_CLIENT_ID: ${{ secrets.WITHINGS_CLIENT_ID }}
+        WITHINGS_CLIENT_SECRET: ${{ secrets.WITHINGS_CLIENT_SECRET }}
       run: node index.js
-    # ---------------------------------------------------------
 
-    # THIS IS THE CRITICAL NEW STEP: It uploads the log file created by index.js
+    - name: Commit and Push Updated Tokens
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add .withings2gsheets/*
+        git commit -m "chore: Update Withings tokens and timestamps" || echo "No changes to commit"
+        git push
+
     - name: Upload Sync Logs
-      if: always() # This ensures the log uploads even if Node crashes and fails the step above
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: withings-sync-logs
