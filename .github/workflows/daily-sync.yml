@@ -2,11 +2,8 @@ name: Daily Garmin Sync
 
 on:
   schedule:
-    # Weekdays: 7:15 AM UK time (06:15 UTC in BST, 07:15 UTC in GMT)
     - cron: '15 6,7 * * 1-5'
-    # Weekends: 8:30 AM UK time (07:30 UTC in BST, 08:30 UTC in GMT)
     - cron: '30 7,8 * * 0,6'
-    # Everyday: 12:00 PM, 5:00 PM, 7:00 PM UK time (covers both GMT and BST offsets)
     - cron: '0 11,12,16,17,18,19 * * *'
   
   workflow_dispatch:
@@ -42,53 +39,51 @@ jobs:
     - name: Daylight Saving Time Filter
       id: dst-filter
       run: |
-        echo "::group::Timezone and Event Debugging"
-        echo "Trigger event: ${{ github.event_name }}"
-        echo "Raw UTC time: $(date -u)"
-        echo "Raw Europe/London time: $(TZ='Europe/London' date)"
-        
-        # Only run this check for scheduled cron jobs, allowing manual dispatches to run anytime
         if [ "${{ github.event_name }}" == "schedule" ]; then
           UK_HOUR=$(TZ='Europe/London' date +%H)
-          UK_DAY=$(TZ='Europe/London' date +%u) # 1-7, where 1 is Monday
-          
-          echo "Evaluated UK_HOUR: $UK_HOUR"
-          echo "Evaluated UK_DAY: $UK_DAY (1=Monday, 7=Sunday)"
-          echo "::endgroup::"
+          UK_DAY=$(TZ='Europe/London' date +%u) 
           
           SHOULD_RUN=false
           
-          # Weekdays (Monday to Friday)
           if [[ "$UK_DAY" -le 5 ]]; then
-            echo "Day type evaluated as: Weekday"
             if [[ "$UK_HOUR" == "07" || "$UK_HOUR" == "12" || "$UK_HOUR" == "17" || "$UK_HOUR" == "19" ]]; then
-              echo "SUCCESS: Hour $UK_HOUR matched a valid weekday slot."
               SHOULD_RUN=true
-            else
-              echo "SKIP: Hour $UK_HOUR did NOT match any valid weekday slot (07, 12, 17, 19)."
             fi
-          # Weekends (Saturday and Sunday)
           else
-            echo "Day type evaluated as: Weekend"
             if [[ "$UK_HOUR" == "08" || "$UK_HOUR" == "12" || "$UK_HOUR" == "17" || "$UK_HOUR" == "19" ]]; then
-              echo "SUCCESS: Hour $UK_HOUR matched a valid weekend slot."
               SHOULD_RUN=true
-            else
-              echo "SKIP: Hour $UK_HOUR did NOT match any valid weekend slot (08, 12, 17, 19)."
             fi
           fi
           
           if [ "$SHOULD_RUN" == "false" ]; then
-            echo "::warning::Current UK time is $UK_HOUR:$(TZ='Europe/London' date +%M) on day $UK_DAY. Exiting early to prevent redundant execution."
+            echo "Current UK time is $UK_HOUR:$(TZ='Europe/London' date +%M) on day $UK_DAY. Exiting early to prevent redundant execution."
             echo "should_run=false" >> $GITHUB_OUTPUT
             exit 0
           fi
-        else
-          echo "Run triggered manually (${{ github.event_name }}). Bypassing time filter."
-          echo "::endgroup::"
         fi
-        
         echo "should_run=true" >> $GITHUB_OUTPUT
-        echo "Time filter check passed. Proceeding to execution..."
 
-    # ... [Keep the rest of your existing steps starting from "Checkout code"] ...
+    # --- YOUR STANDARD REPO CHECKOUT AND RUN STEPS GO HERE ---
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        
+    - name: Install Dependencies
+      run: npm install
+      
+    - name: Run Sync
+      run: node index.js
+    # ---------------------------------------------------------
+
+    # THIS IS THE CRITICAL NEW STEP: It uploads the log file created by index.js
+    - name: Upload Sync Logs
+      if: always() # This ensures the log uploads even if Node crashes and fails the step above
+      uses: actions/upload-artifact@v4
+      with:
+        name: withings-sync-logs
+        path: sync-debug.log
+        retention-days: 5
