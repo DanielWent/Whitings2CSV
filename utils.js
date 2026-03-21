@@ -4,24 +4,19 @@ const FormData = require('form-data');
 const fs = require("fs");
 const axios = require('axios');
 
-/**
- * Reads the last sync timestamp for a specific user.
- */
 function getPreviousTimestamp(user) {
     try {
-        let timestamp = fs.readFileSync(user.timestamp_path);
+        let timestamp = fs.readFileSync(user.timestamp_path, 'utf8');
+        console.log(`[${user.id}] Read previous timestamp: ${timestamp}`);
         return JSON.parse(timestamp);
     } catch (err) {
-        // Changed to 0 (Jan 1, 1970) to ensure all historical data is fetched 
-        // if the sync timestamp files are deleted.
+        console.warn(`[${user.id}] Could not read timestamp file. Defaulting to 0. Reason: ${err.message}`);
         return 0; 
     } 
 }
 
-/**
- * Refreshes the OAuth token for a specific user.
- */
 async function getReplacementAccessToken(refreshToken, user) {
+    console.log(`[${user.id}] Attempting to refresh Withings Access Token...`);
     var bodyFormData = new FormData();
     bodyFormData.append('action', 'requesttoken');
     bodyFormData.append('grant_type', 'refresh_token');
@@ -35,11 +30,15 @@ async function getReplacementAccessToken(refreshToken, user) {
         });
 
         if (response.data.body && response.data.body.access_token) {
+            console.log(`[${user.id}] Token successfully refreshed.`);
             storeTokens(response.data.body.access_token, response.data.body.refresh_token, user);
             return response.data.body.access_token;
+        } else {
+            console.error(`[${user.id}] Token refresh response lacked access_token. Full response:`, JSON.stringify(response.data));
         }
     } catch (error) { 
-        console.log(`[${user.id}] Token Refresh Error:`, error.message); 
+        console.error(`[${user.id}] Token Refresh HTTP Error:`, error.message);
+        if (error.response) console.error(`[${user.id}] Error Response Data:`, JSON.stringify(error.response.data));
     }
     return null;
 }
@@ -47,38 +46,38 @@ async function getReplacementAccessToken(refreshToken, user) {
 function storeTokens(accessToken, refreshToken, user) {
     try { 
         fs.writeFileSync(user.token_path, JSON.stringify({ accessToken, refreshToken })); 
+        console.log(`[${user.id}] Tokens saved to disk.`);
     } catch (error) { 
-        console.log(`[${user.id}] Error storing tokens`, error); 
+        console.error(`[${user.id}] Error storing tokens:`, error.message); 
     }
 }
 
 function storeTime(latestTimestamp, user) {
     try { 
         fs.writeFileSync(user.timestamp_path, JSON.stringify(latestTimestamp)); 
+        console.log(`[${user.id}] Timestamp ${latestTimestamp} saved to disk.`);
     } catch (error) { 
-        console.log(`[${user.id}] Error storing timestamp`, error) 
+        console.error(`[${user.id}] Error storing timestamp:`, error.message); 
     }
 }
 
 async function getWithingsData(accessToken, refreshToken, currentTime, user) {
-    // We subtract 5 days (432000 seconds) from the last sync time to pick up delayed entries
     const startdate = Math.max(0, getPreviousTimestamp(user) - 432000);
+    console.log(`[${user.id}] Fetching data from startdate: ${startdate} to enddate: ${currentTime}`);
     
     let allMeasureGrps = [];
     let hasMore = true;
     let currentOffset = 0;
 
     try {
-        console.log(`Fetching metrics for ${user.id}...`);
-
         while (hasMore) {
+            console.log(`[${user.id}] Requesting /measure API... (Offset: ${currentOffset})`);
             var bodyFormData = new FormData();
             bodyFormData.append('action', 'getmeas');
             bodyFormData.append('access_token', accessToken);
             bodyFormData.append('startdate', startdate);
             bodyFormData.append('enddate', currentTime);
             
-            // Append the offset if we are pulling a subsequent page of data
             if (currentOffset !== 0) {
                 bodyFormData.append('offset', currentOffset);
             }
@@ -87,59 +86,65 @@ async function getWithingsData(accessToken, refreshToken, currentTime, user) {
                 headers: { ...bodyFormData.getHeaders() } 
             });
             
+            console.log(`[${user.id}] Withings API Status Code: ${response.data.status}`);
+            
             if (response.data.status === 401) {
-                console.log(`[${user.id}] Token expired. Refreshing...`);
+                console.warn(`[${user.id}] Token expired (401). Initiating refresh sequence...`);
                 let newAccessToken = await getReplacementAccessToken(refreshToken, user);
                 if (newAccessToken) {
                     return await getWithingsData(newAccessToken, refreshToken, currentTime, user);
+                } else {
+                    console.error(`[${user.id}] Failed to get replacement token. Aborting sync for this user.`);
+                    return null;
                 }
-                return null;
-            }
-            
-            if (response.data.status === 0) {
-                // Combine the new batch of measurements with our running total
+            } else if (response.data.status === 0) {
                 if (response.data.body.measuregrps) {
+                    console.log(`[${user.id}] Retrieved ${response.data.body.measuregrps.length} measure groups.`);
                     allMeasureGrps = allMeasureGrps.concat(response.data.body.measuregrps);
+                } else {
+                    console.log(`[${user.id}] No measure groups in body.`);
                 }
                 
-                // Check if the API is telling us there is more data waiting
                 if (response.data.body.more && response.data.body.offset) {
                     currentOffset = response.data.body.offset;
+                    console.log(`[${user.id}] More data available. Setting offset to ${currentOffset}.`);
                 } else {
+                    console.log(`[${user.id}] No more pages to fetch.`);
                     hasMore = false;
                 }
             } else {
-                console.log(`[${user.id}] API Status Error: ${response.data.status}`);
+                console.error(`[${user.id}] Unhandled API Status Error: ${response.data.status}. Response: ${JSON.stringify(response.data)}`);
                 hasMore = false;
             }
         }
 
-        // Once the loop is finished, process and save the fully merged dataset
         if (allMeasureGrps.length > 0) {
+            console.log(`[${user.id}] Total measure groups to process: ${allMeasureGrps.length}`);
             let combinedBody = { measuregrps: allMeasureGrps };
             let mergedData = await processData(combinedBody, user);
             await persistData(mergedData, user);
             await storeTime(currentTime, user);
             return combinedBody;
         } else {
-            console.log(`[${user.id}] No new measurements found.`);
+            console.log(`[${user.id}] No new measurements found in timeframe. Updating timestamp.`);
             await storeTime(currentTime, user);
             return null;
         }
 
     } catch (error) { 
-        console.log(`[${user.id}] API Error:`, error.message); 
+        console.error(`[${user.id}] Fatal Catch in getWithingsData:`, error.message);
+        if (error.response) console.error(`[${user.id}] Axios Error Response:`, error.response.data);
         return null; 
     }
 }
 
 async function processData(scaleData, user) {
+    console.log(`[${user.id}] Formatting and merging raw metrics...`);
     let dataByDate = new Map();
 
     if (scaleData && scaleData.measuregrps) {
         scaleData.measuregrps.forEach(grp => {
             let timestamp = grp.date;
-            // Group measurements occurring within 1 hour (3600 seconds) of each other
             let existingTimestamp = Array.from(dataByDate.keys()).find(t => Math.abs(t - timestamp) <= 3600);
             let targetKey = existingTimestamp || timestamp;
 
@@ -169,7 +174,10 @@ async function processData(scaleData, user) {
             });
         });
     }
-    return Array.from(dataByDate.values()).sort((a, b) => b.date - a.date);
+    
+    let processedArray = Array.from(dataByDate.values()).sort((a, b) => b.date - a.date);
+    console.log(`[${user.id}] Processing complete. Yielded ${processedArray.length} unique daily records.`);
+    return processedArray;
 }
 
 function formatRow(item) {
@@ -209,6 +217,7 @@ function finalValidator(allRowsMap) {
 }
 
 async function writeCSVToDrive(mergedData, user) {
+    console.log(`[${user.id}] Initiating Google Drive write sequence...`);
     const auth = new google.auth.GoogleAuth({ 
         keyFile: config.gsheets_key_path, 
         scopes: ['https://www.googleapis.com/auth/drive'] 
@@ -219,14 +228,19 @@ async function writeCSVToDrive(mergedData, user) {
     let fileId = null, fileContent = "";
 
     try {
+        console.log(`[${user.id}] Searching for file '${user.driveFileName}' in folder '${user.driveFolderId}'`);
         const listRes = await drive.files.list({ 
             q: `'${user.driveFolderId}' in parents and name = '${user.driveFileName}' and trashed = false` 
         });
 
         if (listRes.data.files.length > 0) {
             fileId = listRes.data.files[0].id;
+            console.log(`[${user.id}] Found existing file. ID: ${fileId}. Downloading current content...`);
             const getRes = await drive.files.get({ fileId: fileId, alt: 'media' }, { responseType: 'text' });
             fileContent = getRes.data;
+            console.log(`[${user.id}] Successfully downloaded existing file content.`);
+        } else {
+            console.log(`[${user.id}] File not found in Drive. Will create a new one.`);
         }
 
         let allRowsMap = new Map();
@@ -238,6 +252,7 @@ async function writeCSVToDrive(mergedData, user) {
                 }
             });
         }
+        console.log(`[${user.id}] Loaded ${allRowsMap.size} existing rows into memory.`);
 
         mergedData.forEach(item => {
             let row = formatRow(item);
@@ -246,22 +261,23 @@ async function writeCSVToDrive(mergedData, user) {
 
         let scrubbedRows = finalValidator(allRowsMap);
         let fullCSV = headerRow + "\n" + scrubbedRows.join("\n") + "\n";
+        console.log(`[${user.id}] Preparing to upload final CSV containing ${scrubbedRows.length} rows.`);
 
         if (fileId) {
             await drive.files.update({ 
                 fileId, 
                 media: { mimeType: 'text/csv', body: fullCSV } 
             });
-            console.log(`[${user.id}] Successfully updated Drive CSV: ${user.driveFileName}`);
+            console.log(`[${user.id}] SUCCESS: Updated existing Drive CSV.`);
         } else {
             await drive.files.create({ 
                 requestBody: { name: user.driveFileName, parents: [user.driveFolderId] }, 
                 media: { mimeType: 'text/csv', body: fullCSV } 
             });
-            console.log(`[${user.id}] Successfully created new Drive CSV: ${user.driveFileName}`);
+            console.log(`[${user.id}] SUCCESS: Created new Drive CSV.`);
         }
     } catch (error) { 
-        console.log(`[${user.id}] Drive Error:`, error.message); 
+        console.error(`[${user.id}] FATAL Drive Error:`, error.message); 
     }
 }
 
