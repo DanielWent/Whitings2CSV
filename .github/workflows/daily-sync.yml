@@ -1,4 +1,4 @@
-name: Daily Withings Sync
+name: Daily Garmin Sync
 
 on:
   schedule:
@@ -84,6 +84,7 @@ jobs:
       env:
         WITHINGS_CLIENT_ID: ${{ secrets.WITHINGS_CLIENT_ID }}
         WITHINGS_CLIENT_SECRET: ${{ secrets.WITHINGS_CLIENT_SECRET }}
+        GDRIVE_CREDS: ${{ secrets.GDRIVE_CREDS }}
       run: node index.js
 
     - name: Commit and Push Updated Tokens
