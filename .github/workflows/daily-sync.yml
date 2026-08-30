@@ -2,12 +2,9 @@ name: Daily Garmin Sync
 
 on:
   schedule:
-    # Weekdays: 7:15 AM UK time (06:15 UTC in BST, 07:15 UTC in GMT)
-    - cron: '15 6,7 * * 1-5'
-    # Weekends: 8:30 AM UK time (07:30 UTC in BST, 08:30 UTC in GMT)
-    - cron: '30 7,8 * * 0,6'
-    # Everyday: 12:00 PM, 5:00 PM, 7:00 PM UK time (covers both GMT and BST offsets)
-    - cron: '0 09,12 * * *'
+    # Runs at 05:00, 06:00, 07:00, 08:00, and 09:00 UTC daily
+    # Covers 06:00–09:00 local UK time across both GMT (UTC+0) and BST (UTC+1)
+    - cron: '0 5-9 * * *'
   
   workflow_dispatch:
     inputs:
@@ -42,45 +39,37 @@ jobs:
     - name: Daylight Saving Time Filter
       id: dst-filter
       run: |
-        # Only run this check for scheduled cron jobs, allowing manual dispatches to run anytime
         if [ "${{ github.event_name }}" == "schedule" ]; then
           UK_HOUR=$(TZ='Europe/London' date +%H)
-          UK_DAY=$(TZ='Europe/London' date +%u) # 1-7, where 1 is Monday
           
-          SHOULD_RUN=false
-          
-          # Weekdays (Monday to Friday)
-          if [[ "$UK_DAY" -le 5 ]]; then
-            if [[ "$UK_HOUR" == "07" || "$UK_HOUR" == "12" || "$UK_HOUR" == "17" || "$UK_HOUR" == "19" ]]; then
-              SHOULD_RUN=true
-            fi
-          # Weekends (Saturday and Sunday)
+          # Match 06:00, 07:00, 08:00, and 09:00 local time
+          if [[ "$UK_HOUR" =~ ^(06|07|08|09)$ ]]; then
+            echo "Current local time is $UK_HOUR:00. Proceeding with sync."
+            echo "should_run=true" >> $GITHUB_OUTPUT
           else
-            if [[ "$UK_HOUR" == "08" || "$UK_HOUR" == "12" || "$UK_HOUR" == "17" || "$UK_HOUR" == "19" ]]; then
-              SHOULD_RUN=true
-            fi
-          fi
-          
-          if [ "$SHOULD_RUN" == "false" ]; then
-            echo "Current UK time is $UK_HOUR:$(TZ='Europe/London' date +%M) on day $UK_DAY. Exiting early to prevent redundant execution."
+            echo "Current local time is $UK_HOUR:$(TZ='Europe/London' date +%M). Outside the 06:00-09:00 window. Skipping."
             echo "should_run=false" >> $GITHUB_OUTPUT
-            exit 0
           fi
+        else
+          echo "should_run=true" >> $GITHUB_OUTPUT
         fi
-        echo "should_run=true" >> $GITHUB_OUTPUT
 
     - name: Checkout repository
+      if: steps.dst-filter.outputs.should_run == 'true'
       uses: actions/checkout@v4
       
     - name: Setup Node
+      if: steps.dst-filter.outputs.should_run == 'true'
       uses: actions/setup-node@v4
       with:
         node-version: '20'
         
     - name: Install Dependencies
+      if: steps.dst-filter.outputs.should_run == 'true'
       run: npm install
       
     - name: Run Sync
+      if: steps.dst-filter.outputs.should_run == 'true'
       env:
         WITHINGS_CLIENT_ID: ${{ secrets.WITHINGS_CLIENT_ID }}
         WITHINGS_CLIENT_SECRET: ${{ secrets.WITHINGS_CLIENT_SECRET }}
@@ -88,6 +77,7 @@ jobs:
       run: node index.js
 
     - name: Commit and Push Updated Tokens
+      if: steps.dst-filter.outputs.should_run == 'true'
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
@@ -96,7 +86,7 @@ jobs:
         git push
 
     - name: Upload Sync Logs
-      if: always()
+      if: steps.dst-filter.outputs.should_run == 'true' && always()
       uses: actions/upload-artifact@v4
       with:
         name: withings-sync-logs
