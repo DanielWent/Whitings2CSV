@@ -2,10 +2,13 @@ name: Daily Garmin Sync
 
 on:
   schedule:
-    # Runs at 05:00, 06:00, 07:00, 08:00, and 09:00 UTC daily
-    # Covers 06:00–09:00 local UK time across both GMT (UTC+0) and BST (UTC+1)
-    - cron: '0 5-9 * * *'
-  
+    # Split into individual crons so we can identify the trigger time
+    - cron: '0 5 * * *'
+    - cron: '0 6 * * *'
+    - cron: '0 7 * * *'
+    - cron: '0 8 * * *'
+    - cron: '0 9 * * *'
+
   workflow_dispatch:
     inputs:
       profile:
@@ -34,40 +37,44 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Daylight Saving Time Filter
       id: dst-filter
       run: |
         if [ "${{ github.event_name }}" == "schedule" ]; then
-          UK_HOUR=$(TZ='Europe/London' date +%H)
+          IS_BST=$(TZ='Europe/London' date +%Z)
+          SCHEDULE="${{ github.event.schedule }}"
           
-          # Match 06:00, 07:00, 08:00, and 09:00 local time
-          if [[ "$UK_HOUR" =~ ^(06|07|08|09)$ ]]; then
-            echo "Current local time is $UK_HOUR:00. Proceeding with sync."
-            echo "should_run=true" >> $GITHUB_OUTPUT
-          else
-            echo "Current local time is $UK_HOUR:$(TZ='Europe/London' date +%M). Outside the 06:00-09:00 window. Skipping."
+          if [ "$IS_BST" == "BST" ] && [ "$SCHEDULE" == "0 9 * * *" ]; then
+            echo "BST active. Skipping the 09:00 UTC (10:00 BST) scheduled run."
             echo "should_run=false" >> $GITHUB_OUTPUT
+          elif [ "$IS_BST" == "GMT" ] && [ "$SCHEDULE" == "0 5 * * *" ]; then
+            echo "GMT active. Skipping the 05:00 UTC (05:00 GMT) scheduled run."
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          else
+            echo "Scheduled time ($SCHEDULE) is within the 06:00-09:00 UK time window. Proceeding."
+            echo "should_run=true" >> $GITHUB_OUTPUT
           fi
         else
+          echo "Manual trigger detected. Proceeding."
           echo "should_run=true" >> $GITHUB_OUTPUT
         fi
 
     - name: Checkout repository
       if: steps.dst-filter.outputs.should_run == 'true'
       uses: actions/checkout@v4
-      
+
     - name: Setup Node
       if: steps.dst-filter.outputs.should_run == 'true'
       uses: actions/setup-node@v4
       with:
         node-version: '20'
-        
+
     - name: Install Dependencies
       if: steps.dst-filter.outputs.should_run == 'true'
       run: npm install
-      
+
     - name: Run Sync
       if: steps.dst-filter.outputs.should_run == 'true'
       env:
