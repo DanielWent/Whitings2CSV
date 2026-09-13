@@ -157,7 +157,7 @@ async function processData(scaleData, user) {
                 
                 if (metricName) {
                     if (metricName === "Body Fat (%)" && user.id === 'drw') {
-                        val = val + 3;
+                        val = val + 6;
                     }
                     if (metricName === "AFib Status") {
                         if (val === 9) val = "Sinus Rhythm (No Signs of AFib)";
